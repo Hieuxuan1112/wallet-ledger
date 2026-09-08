@@ -79,6 +79,16 @@ class MoneyServiceIT extends AbstractIntegrationTest {
         assertThat(walletBalanceOf(user)).isEqualByComparingTo("10.0000");
     }
 
+    /** Registration always creates a wallet, so this is a broken invariant — but it must still
+     *  answer in the one error format the API promises, and without echoing the user id back. */
+    @Test
+    void aUserWithNoWalletGetsAStructuredError() {
+        AppUser orphan = users.save(AppUser.create("orphan-" + UUID.randomUUID(), "hash"));
+
+        assertThatThrownBy(() -> money.deposit(orphan.getId(), new BigDecimal("1.0000"), "no wallet"))
+                .isInstanceOf(WalletMissingException.class);
+    }
+
     @Test
     void aTransferMovesMoneyBetweenTwoWallets() {
         AppUser payer = newUserWithWallet();

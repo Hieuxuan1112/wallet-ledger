@@ -50,7 +50,7 @@ public class MoneyService {
             LedgerTransaction tx = posting.post(TransactionType.DEPOSIT, userId, description,
                     SYSTEM_FUNDING, walletId, amount);
             TransactionView view = TransactionView.of(tx, amount, balanceAfter(walletId));
-            auditSuccess(userId, "DEPOSIT", amount);
+            auditSuccess(userId, "DEPOSIT", "amount=" + amount);
             return view;
         } catch (RuntimeException e) {
             auditFailure(userId, "DEPOSIT", amount, e);
@@ -65,7 +65,7 @@ public class MoneyService {
             LedgerTransaction tx = posting.post(TransactionType.WITHDRAWAL, userId, description,
                     walletId, SYSTEM_PAYOUT, amount);
             TransactionView view = TransactionView.of(tx, amount, balanceAfter(walletId));
-            auditSuccess(userId, "WITHDRAWAL", amount);
+            auditSuccess(userId, "WITHDRAWAL", "amount=" + amount);
             return view;
         } catch (RuntimeException e) {
             auditFailure(userId, "WITHDRAWAL", amount, e);
@@ -87,7 +87,10 @@ public class MoneyService {
             LedgerTransaction tx = posting.post(TransactionType.TRANSFER, fromUserId, description,
                     fromWalletId, toWalletId, amount);
             TransactionView view = TransactionView.of(tx, amount, balanceAfter(fromWalletId));
-            auditSuccess(fromUserId, "TRANSFER", amount);
+            // Both sides. Money arriving is as auditable as money leaving, and audit_log has one
+            // user_id column, so this is two rows tied together by the transaction's public id.
+            auditSuccess(fromUserId, "TRANSFER", "amount=" + amount + " out tx=" + tx.getPublicId());
+            auditSuccess(recipient.getId(), "TRANSFER", "amount=" + amount + " in tx=" + tx.getPublicId());
             return view;
         } catch (RuntimeException e) {
             auditFailure(fromUserId, "TRANSFER", amount, e);
@@ -103,12 +106,12 @@ public class MoneyService {
      * matters. The failure path stays inline and keeps REQUIRES_NEW: there, surviving the
      * caller's rollback is the whole point.
      */
-    private void auditSuccess(long userId, String action, BigDecimal amount) {
+    private void auditSuccess(long userId, String action, String detail) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
                 try {
-                    audit.record(userId, action, "amount=" + amount, AuditOutcome.SUCCESS);
+                    audit.record(userId, action, detail, AuditOutcome.SUCCESS);
                 } catch (RuntimeException e) {
                     // The money has already committed; losing the audit row must not fail the
                     // request on top of it. Loud in the log, silent to the caller.
@@ -135,7 +138,7 @@ public class MoneyService {
 
     private long walletIdOf(long userId) {
         return accounts.findWalletIdByOwnerUserId(userId)
-                .orElseThrow(() -> new IllegalStateException("User " + userId + " has no wallet"));
+                .orElseThrow(WalletMissingException::new);
     }
 
     /** Read after posting: this returns the instance the posting service loaded under lock. */

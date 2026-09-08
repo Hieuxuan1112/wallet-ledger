@@ -52,6 +52,24 @@ class AuditLoggerIT extends AbstractIntegrationTest {
     }
 
     /**
+     * Money arriving is as auditable an event as money leaving. Recording only the sender means
+     * "where did this money in my wallet come from" cannot be answered from audit_log at all.
+     * The table has a single user_id column, so this is two rows rather than one wider row, and
+     * each carries the transaction's public id so the two sides can be tied together.
+     */
+    @Test
+    void aTransferIsRecordedForBothParties() {
+        AppUser payer = newUserWithWallet();
+        AppUser payee = newUserWithWallet();
+        money.deposit(payer.getId(), new BigDecimal("20.0000"), "seed");
+
+        money.transfer(payer.getId(), payee.getUsername(), new BigDecimal("5.0000"), "split");
+
+        assertThat(auditRows(payee.getId(), "SUCCESS")).isEqualTo(1);
+        assertThat(auditRows(payer.getId(), "SUCCESS")).isEqualTo(2);
+    }
+
+    /**
      * The point of the whole task. The transaction rolls back, and the audit row must not roll
      * back with it — otherwise the only operations ever recorded are the ones that worked, and
      * the log is useless exactly where it matters.

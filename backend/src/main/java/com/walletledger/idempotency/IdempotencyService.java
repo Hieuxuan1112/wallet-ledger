@@ -80,6 +80,12 @@ public class IdempotencyService {
         if (!record.getEndpoint().equals(endpoint) || !record.getRequestHash().equals(requestHash)) {
             throw new IdempotencyKeyReusedException();
         }
+        // Defence, not the mechanism. V4's comment presents a null body as how a concurrent
+        // duplicate is detected, and that is not what happens: claimAndRun fills the body before
+        // it commits, and under READ COMMITTED this query cannot see an uncommitted row at all,
+        // so no row reachable from here has a null body. Concurrency is handled entirely by the
+        // constraint violation above. This branch stays because decode(null) would be an NPE if a
+        // later feature ever does write a half-finished row.
         if (!record.isComplete()) {
             throw new IdempotencyInProgressException();
         }

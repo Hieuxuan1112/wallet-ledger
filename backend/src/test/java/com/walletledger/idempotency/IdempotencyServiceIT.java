@@ -96,6 +96,20 @@ class IdempotencyServiceIT extends AbstractIntegrationTest {
         assertThat(balanceOf(b)).isEqualByComparingTo("7.0000");
     }
 
+    /** The stored status has to be the one that was actually sent, or replaying it later lies. */
+    @Test
+    void theStoredStatusIsTheOneTheEndpointsAnswer() {
+        AppUser user = newUserWithWallet();
+        String key = UUID.randomUUID().toString();
+
+        idempotency.execute(user.getId(), key, ENDPOINT, "{\"amount\":\"2.0000\"}",
+                () -> money.deposit(user.getId(), new BigDecimal("2.0000"), "status"));
+
+        assertThat(jdbc.queryForObject(
+                "select response_status from idempotency_key where user_id = ? and idem_key = ?",
+                Integer.class, user.getId(), key)).isEqualTo(201);
+    }
+
     /**
      * The catch in IdempotencyService exists for one thing: somebody else claimed this key first.
      * Every other integrity failure — a rejected ledger balance, a violated CHECK — must reach the

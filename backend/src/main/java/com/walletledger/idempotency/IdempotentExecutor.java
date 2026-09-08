@@ -1,6 +1,7 @@
 package com.walletledger.idempotency;
 
 import com.walletledger.money.TransactionView;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,7 +32,10 @@ public class IdempotentExecutor {
         IdempotencyRecord record = records.saveAndFlush(
                 new IdempotencyRecord(userId, key, endpoint, requestHash));
         TransactionView view = action.get();
-        record.complete(200, codec.encode(view));
+        // What the endpoints actually answer. Storing 200 here would only be harmless for as
+        // long as replay ignores the stored status, and an idempotency layer that replays a
+        // response is eventually expected to replay its status too.
+        record.complete(HttpStatus.CREATED.value(), codec.encode(view));
         return view;
     }
 }
