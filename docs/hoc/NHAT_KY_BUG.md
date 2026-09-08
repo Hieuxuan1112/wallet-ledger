@@ -543,3 +543,53 @@ phí** từ bước đỏ của một lỗi khác.
 3. **Rà bảo mật và rà chất lượng không thừa nhau.** Lần rà bảo mật soi authz, injection, rò rỉ,
    IDOR — và **bỏ lọt lỗ hổng A hoàn toàn**. Nó chỉ lộ ra khi đọc lại `post()` với câu hỏi khác:
    *"hàm này đang tin gì ở đầu vào của nó?"* Cùng một đoạn code, hai câu hỏi, hai kết quả.
+
+---
+
+## 11. Bắt sai lớp ngoại lệ thì idempotency hỏng mà không ai biết
+
+**Giai đoạn:** 1B, sửa phát hiện #3 của `/code-review` · **Ai bắt được:** bước đỏ, trước khi kịp sửa sai
+
+**Bối cảnh.** `IdempotencyService` bắt `DataIntegrityViolationException` — quá rộng, nó nuốt mọi vi
+phạm toàn vẹn thành 409 *"Request in progress. Retry shortly."* Cần thu hẹp lại còn đúng trường hợp
+trùng khoá.
+
+**Giả thuyết đầu tiên.** "Trùng khoá unique thì Spring dịch thành `DuplicateKeyException`. Đổi
+`catch` sang lớp đó là xong." Nghe rất hợp lý — `DuplicateKeyException` **là** lớp con của
+`DataIntegrityViolationException`, sinh ra đúng để chỉ trường hợp này.
+
+**Sai.** Viết test khoá lại giả định đó trước khi sửa, chạy, và đọc:
+
+```
+duplicate key value violates unique constraint "uq_idempotency_user_key"   (SQLSTATE 23505)
+Expecting actual throwable to be an instance of: [DuplicateKeyException]
+but was: org.springframework.dao.DataIntegrityViolationException
+```
+
+Qua **JPA**, `HibernateJpaDialect` dịch mọi `ConstraintViolationException` của Hibernate thành
+`DataIntegrityViolationException` **chung**. `DuplicateKeyException` chỉ xuất hiện trên đường
+**JdbcTemplate**, nơi `SQLExceptionSubclassTranslator` phân loại theo SQLSTATE. Cùng một CSDL, cùng
+một lỗi, hai lớp ngoại lệ khác nhau tuỳ đường đi.
+
+**Nếu không có bước đỏ đó.** `catch (DuplicateKeyException)` **biên dịch được**, đọc qua thấy đúng,
+và mọi test hiện có vẫn xanh — vì không test nào chạy hai request đua nhau trên cùng một khoá. Cơ
+chế idempotency sẽ **hỏng lặng lẽ**: request thua cuộc nhận 500 thô thay vì 409.
+
+**Cách sửa đúng.** Nhận diện bằng **tên constraint**, không bằng lớp ngoại lệ:
+
+```java
+private boolean isKeyCollision(DataIntegrityViolationException e) {
+    return e.getCause() instanceof ConstraintViolationException violation
+            && KEY_UNIQUE_CONSTRAINT.equalsIgnoreCase(violation.getConstraintName());
+}
+```
+
+Và thêm test 16 luồng đua trên một khoá để khoá chiều ngược lại: mọi luồng thua **hoặc** replay
+được response của kẻ thắng **hoặc** nhận 409, không luồng nào nhận thứ khác, và tiền trừ **đúng một
+lần**. Log cho thấy 15/16 luồng thật sự va vào `uq_idempotency_user_key`.
+
+**Bài học.** Đây là bug #7 ở dạng khác: **kỳ vọng của chính mình về cái sẽ nhận được cũng là một giả
+định cần kiểm**. Nguy hiểm hơn bug #7 ở chỗ nó **không** làm test đỏ — nó chỉ làm hỏng một nhánh mà
+chưa ai viết test. Khi thu hẹp một `catch`, đừng hỏi *"lớp nào nghe có vẻ đúng"*; hãy **ném lỗi
+thật ra và đọc xem nhận được lớp gì**. Một test bốn dòng đứng giữa tôi và một lỗi idempotency im
+lặng trên môi trường thật.

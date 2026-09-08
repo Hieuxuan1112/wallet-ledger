@@ -10,6 +10,7 @@ import com.walletledger.money.MoneyService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.util.UUID;
@@ -23,11 +24,16 @@ class AuditLoggerIT extends AbstractIntegrationTest {
     @Autowired private AppUserRepository users;
     @Autowired private AccountRepository accounts;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private TransactionTemplate transactionTemplate;
 
     private AppUser newUserWithWallet() {
         AppUser user = users.save(AppUser.create("audit-" + UUID.randomUUID(), "hash"));
         accounts.save(Account.walletFor(user.getId()));
         return user;
+    }
+
+    private java.math.BigDecimal balanceOf(AppUser user) {
+        return accounts.findByOwnerUserId(user.getId()).orElseThrow().getBalance();
     }
 
     private int auditRows(long userId, String outcome) {
@@ -61,5 +67,28 @@ class AuditLoggerIT extends AbstractIntegrationTest {
         assertThat(jdbc.queryForObject(
                 "select count(*) from ledger_entry e join account a on a.id = e.account_id "
                         + "where a.owner_user_id = ?", Integer.class, user.getId())).isZero();
+    }
+
+    /**
+     * A SUCCESS row must describe something that committed, not something that was attempted.
+     * REQUIRES_NEW commits the audit row immediately, so writing it inside the money transaction
+     * means a later rollback leaves the log claiming an operation succeeded that never happened —
+     * exactly the case an auditor would be investigating.
+     */
+    @Test
+    void aSuccessRowIsNotWrittenWhenTheSurroundingTransactionRollsBack() {
+        AppUser user = newUserWithWallet();
+
+        try {
+            transactionTemplate.executeWithoutResult(status -> {
+                money.deposit(user.getId(), new BigDecimal("10.0000"), "doomed");
+                status.setRollbackOnly();
+            });
+        } catch (RuntimeException expectedRollback) {
+            // Some rollback paths surface an UnexpectedRollbackException; the assertions are the point.
+        }
+
+        assertThat(balanceOf(user)).isEqualByComparingTo("0");
+        assertThat(auditRows(user.getId(), "SUCCESS")).isZero();
     }
 }

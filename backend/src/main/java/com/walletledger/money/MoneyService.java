@@ -8,13 +8,19 @@ import com.walletledger.auth.AppUserRepository;
 import com.walletledger.ledger.LedgerPostingService;
 import com.walletledger.ledger.LedgerTransaction;
 import com.walletledger.ledger.TransactionType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 
 @Service
 public class MoneyService {
+
+    private static final Logger log = LoggerFactory.getLogger(MoneyService.class);
 
     /**
      * Seeded with these exact ids by V2__ledger.sql, and LedgerSchemaIT keeps the constants
@@ -44,11 +50,10 @@ public class MoneyService {
             LedgerTransaction tx = posting.post(TransactionType.DEPOSIT, userId, description,
                     SYSTEM_FUNDING, walletId, amount);
             TransactionView view = TransactionView.of(tx, amount, balanceAfter(walletId));
-            audit.record(userId, "DEPOSIT", "amount=" + amount, AuditOutcome.SUCCESS);
+            auditSuccess(userId, "DEPOSIT", amount);
             return view;
         } catch (RuntimeException e) {
-            audit.record(userId, "DEPOSIT", "amount=" + amount + " rejected: "
-                    + e.getClass().getSimpleName(), AuditOutcome.FAILURE);
+            auditFailure(userId, "DEPOSIT", amount, e);
             throw e;
         }
     }
@@ -60,11 +65,10 @@ public class MoneyService {
             LedgerTransaction tx = posting.post(TransactionType.WITHDRAWAL, userId, description,
                     walletId, SYSTEM_PAYOUT, amount);
             TransactionView view = TransactionView.of(tx, amount, balanceAfter(walletId));
-            audit.record(userId, "WITHDRAWAL", "amount=" + amount, AuditOutcome.SUCCESS);
+            auditSuccess(userId, "WITHDRAWAL", amount);
             return view;
         } catch (RuntimeException e) {
-            audit.record(userId, "WITHDRAWAL", "amount=" + amount + " rejected: "
-                    + e.getClass().getSimpleName(), AuditOutcome.FAILURE);
+            auditFailure(userId, "WITHDRAWAL", amount, e);
             throw e;
         }
     }
@@ -83,12 +87,49 @@ public class MoneyService {
             LedgerTransaction tx = posting.post(TransactionType.TRANSFER, fromUserId, description,
                     fromWalletId, toWalletId, amount);
             TransactionView view = TransactionView.of(tx, amount, balanceAfter(fromWalletId));
-            audit.record(fromUserId, "TRANSFER", "amount=" + amount, AuditOutcome.SUCCESS);
+            auditSuccess(fromUserId, "TRANSFER", amount);
             return view;
         } catch (RuntimeException e) {
-            audit.record(fromUserId, "TRANSFER", "amount=" + amount + " rejected: "
-                    + e.getClass().getSimpleName(), AuditOutcome.FAILURE);
+            auditFailure(fromUserId, "TRANSFER", amount, e);
             throw e;
+        }
+    }
+
+    /**
+     * Deferred to afterCommit, so the row describes something that happened rather than something
+     * that was attempted. AuditLogger's REQUIRES_NEW commits immediately, so recording success
+     * inline would leave the log asserting a deposit that a failed COMMIT then threw away — the
+     * deferred ledger-balance trigger only fires at commit time, which is exactly when this
+     * matters. The failure path stays inline and keeps REQUIRES_NEW: there, surviving the
+     * caller's rollback is the whole point.
+     */
+    private void auditSuccess(long userId, String action, BigDecimal amount) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    audit.record(userId, action, "amount=" + amount, AuditOutcome.SUCCESS);
+                } catch (RuntimeException e) {
+                    // The money has already committed; losing the audit row must not fail the
+                    // request on top of it. Loud in the log, silent to the caller.
+                    log.error("Could not audit successful {} for user {}", action, userId, e);
+                }
+            }
+        });
+    }
+
+    /**
+     * The audit write must never replace the exception it is describing. Bug 9 showed the pool
+     * can be exhausted by AuditLogger's own second connection, so this call really can throw —
+     * and if it escaped, the caller would see a connection error instead of the 409 the domain
+     * produced. Attached as suppressed so the diagnosis is not lost either.
+     */
+    private void auditFailure(long userId, String action, BigDecimal amount, RuntimeException cause) {
+        try {
+            audit.record(userId, action, "amount=" + amount + " rejected: "
+                    + cause.getClass().getSimpleName(), AuditOutcome.FAILURE);
+        } catch (RuntimeException auditFailure) {
+            cause.addSuppressed(auditFailure);
         }
     }
 
