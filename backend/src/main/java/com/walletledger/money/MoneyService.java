@@ -1,6 +1,8 @@
 package com.walletledger.money;
 
 import com.walletledger.account.AccountRepository;
+import com.walletledger.audit.AuditLogger;
+import com.walletledger.audit.AuditOutcome;
 import com.walletledger.auth.AppUser;
 import com.walletledger.auth.AppUserRepository;
 import com.walletledger.ledger.LedgerPostingService;
@@ -25,42 +27,69 @@ public class MoneyService {
     private final AppUserRepository users;
     private final AccountRepository accounts;
     private final LedgerPostingService posting;
+    private final AuditLogger audit;
 
-    public MoneyService(AppUserRepository users, AccountRepository accounts, LedgerPostingService posting) {
+    public MoneyService(AppUserRepository users, AccountRepository accounts,
+                        LedgerPostingService posting, AuditLogger audit) {
         this.users = users;
         this.accounts = accounts;
         this.posting = posting;
+        this.audit = audit;
     }
 
     @Transactional
     public TransactionView deposit(long userId, BigDecimal amount, String description) {
-        long walletId = walletIdOf(userId);
-        LedgerTransaction tx = posting.post(TransactionType.DEPOSIT, userId, description,
-                SYSTEM_FUNDING, walletId, amount);
-        return TransactionView.of(tx, amount, balanceAfter(walletId));
+        try {
+            long walletId = walletIdOf(userId);
+            LedgerTransaction tx = posting.post(TransactionType.DEPOSIT, userId, description,
+                    SYSTEM_FUNDING, walletId, amount);
+            TransactionView view = TransactionView.of(tx, amount, balanceAfter(walletId));
+            audit.record(userId, "DEPOSIT", "amount=" + amount, AuditOutcome.SUCCESS);
+            return view;
+        } catch (RuntimeException e) {
+            audit.record(userId, "DEPOSIT", "amount=" + amount + " rejected: "
+                    + e.getClass().getSimpleName(), AuditOutcome.FAILURE);
+            throw e;
+        }
     }
 
     @Transactional
     public TransactionView withdraw(long userId, BigDecimal amount, String description) {
-        long walletId = walletIdOf(userId);
-        LedgerTransaction tx = posting.post(TransactionType.WITHDRAWAL, userId, description,
-                walletId, SYSTEM_PAYOUT, amount);
-        return TransactionView.of(tx, amount, balanceAfter(walletId));
+        try {
+            long walletId = walletIdOf(userId);
+            LedgerTransaction tx = posting.post(TransactionType.WITHDRAWAL, userId, description,
+                    walletId, SYSTEM_PAYOUT, amount);
+            TransactionView view = TransactionView.of(tx, amount, balanceAfter(walletId));
+            audit.record(userId, "WITHDRAWAL", "amount=" + amount, AuditOutcome.SUCCESS);
+            return view;
+        } catch (RuntimeException e) {
+            audit.record(userId, "WITHDRAWAL", "amount=" + amount + " rejected: "
+                    + e.getClass().getSimpleName(), AuditOutcome.FAILURE);
+            throw e;
+        }
     }
 
     @Transactional
     public TransactionView transfer(long fromUserId, String toUsername, BigDecimal amount, String description) {
-        AppUser recipient = users.findByUsername(toUsername)
-                .orElseThrow(RecipientNotFoundException::new);
-        if (recipient.getId() == fromUserId) {
-            throw new SelfTransferException();
-        }
-        long fromWalletId = walletIdOf(fromUserId);
-        long toWalletId = walletIdOf(recipient.getId());
+        try {
+            AppUser recipient = users.findByUsername(toUsername)
+                    .orElseThrow(RecipientNotFoundException::new);
+            if (recipient.getId() == fromUserId) {
+                throw new SelfTransferException();
+            }
+            long fromWalletId = walletIdOf(fromUserId);
+            long toWalletId = walletIdOf(recipient.getId());
 
-        LedgerTransaction tx = posting.post(TransactionType.TRANSFER, fromUserId, description,
-                fromWalletId, toWalletId, amount);
-        return TransactionView.of(tx, amount, balanceAfter(fromWalletId));
+            LedgerTransaction tx = posting.post(TransactionType.TRANSFER, fromUserId, description,
+                    fromWalletId, toWalletId, amount);
+            TransactionView view = TransactionView.of(tx, amount, balanceAfter(fromWalletId));
+            audit.record(fromUserId, "TRANSFER", "amount=" + amount, AuditOutcome.SUCCESS);
+            return view;
+        } catch (RuntimeException e) {
+            audit.record(fromUserId, "TRANSFER", "amount=" + amount + " rejected: "
+                    + e.getClass().getSimpleName(), AuditOutcome.FAILURE);
+            throw e;
+        }
     }
 
     private long walletIdOf(long userId) {
