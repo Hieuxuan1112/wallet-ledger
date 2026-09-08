@@ -328,3 +328,73 @@ một cái bẫy thứ hai: **kỳ vọng của chính mình về chuỗi cần 
 không ra kết quả, hãy hỏi "công cụ có đang chạy không?" trước khi hỏi "code có sai không". Ở đây
 `show-sql` im lặng hoàn toàn, và chính sự im lặng tuyệt đối đó — không một dòng SQL nào, kể cả
 `insert` — mới là dấu hiệu rằng dụng cụ đo chưa bật, chứ không phải mã hỏng.
+
+---
+
+## 8. Bất biến toàn cục không kiểm chứng được trên một CSDL dùng chung
+
+**Giai đoạn:** 1B Task 4 · **Ai bắt được:** chạy full suite sau khi test riêng đã xanh
+
+**Triệu chứng.** `MoneyServiceIT` chạy **riêng**: 7/7 xanh. Chạy **cả bộ** (`mvn verify`, 52 test):
+đúng một test đỏ.
+
+```
+MoneyServiceIT.theWholeLedgerStillSumsToZero:126
+expected: 0
+ but was: 192.5000
+```
+
+Dòng 126 là khẳng định thứ hai — `select sum(balance) from account`. Khẳng định thứ nhất,
+`select sum(amount) from ledger_entry`, **vẫn xanh**.
+
+**Giả thuyết đầu tiên.** "`MoneyService` làm lệch số dư — nó cộng ở một bên mà quên trừ ở bên kia."
+**Sai.** Nếu đúng vậy thì test chạy riêng cũng phải đỏ, và sổ cái cũng phải lệch theo. Ở đây sổ cái
+cân bằng tuyệt đối còn số dư thì không — hai con số nói hai chuyện khác nhau, và **chính chỗ lệch
+nhau đó là manh mối**, giống hệt bug #4.
+
+**Vì sao sai, và sự thật là gì.** Một container PostgreSQL phục vụ cả JVM (xem bug #4) và **không
+có rollback giữa các class test**. Đến lượt `MoneyServiceIT` chạy, tổng số dư đã lệch sẵn — do hai
+test khác, **cả hai đều đang làm đúng việc của chúng**:
+
+| Nguồn | Việc nó đang làm | Ảnh hưởng `sum(balance)` |
+|---|---|---|
+| `AccountPersistenceIT:37` — `wallet.credit(100.0000)` qua entity | Kiểm `@Version` tăng khi số dư đổi. Không đi qua sổ cái, **cố ý** | **+100.0000** |
+| `LedgerPostingServiceIT` — 50 + 30 + 12,5 rút từ `SYSTEM_FUNDING` | Đúng nghiệp vụ, cân bằng | 0 (funding = −92,5) |
+| `LedgerSchemaIT:64` — `update account set balance = 0 where id = 1` | Kiểm `CHECK` chỉ áp cho ví người dùng; dọn dẹp sau khi đặt −500. **Ghi đè** luôn phần âm ở trên | **+92.5000** |
+| | | **Tổng 192.5000** |
+
+Con số tính tay khớp **chính xác** con số trong báo lỗi. Đó là bằng chứng, không phải suy đoán —
+và nó tốn ít thời gian hơn chạy lại build 2 phút để in ra bảng số dư.
+
+**Vì sao khẳng định thứ nhất vẫn xanh.** `sum(amount) = 0` được **CSDL** bảo đảm: constraint
+trigger `DEFERRABLE INITIALLY DEFERRED` của V2 từ chối mọi giao dịch không cân bằng lúc COMMIT.
+Không test nào phá được, kể cả test cố tình phá (`anUnbalancedTransactionIsRejectedAtCommit`).
+`sum(balance) = 0` thì **không có gì bảo vệ** — nó chỉ đúng nếu mọi thay đổi số dư đều đi qua
+`LedgerPostingService`, và hai test schema thì cố ý đi tắt.
+
+**Cách sửa đúng.** Không đụng vào code sản xuất — nó không sai. Không sửa hai test kia — chúng cũng
+không sai. Đổi phép đo: chụp tổng **trước** và **sau**, khẳng định **hiệu bằng 0**.
+
+```java
+BigDecimal balancesBefore = totalAccountBalance();
+// ... deposit, transfer, withdraw ...
+assertThat(totalAccountBalance()).isEqualByComparingTo(balancesBefore);
+```
+
+Bất biến thật sự thuộc về `MoneyService` không phải "CSDL sạch" mà là **"một chuỗi thao tác tiền
+không tạo ra và không huỷ đi đồng nào"**. Dạng hiệu số nói đúng điều đó, và **mạnh hơn** dạng cũ:
+nó đúng bất kể class nào chạy trước để lại gì. Test cũng được đổi tên thành
+`moneyIsNeitherCreatedNorDestroyed` cho khớp với điều nó thật sự khẳng định.
+
+Đáng chú ý: pattern đúng **đã có sẵn ngay trong cùng file** — `fundingBefore` và `payoutBefore` ở
+hai test phía trên đo bằng hiệu số. Chỉ riêng test cuối vô tình dùng con số tuyệt đối.
+
+**Bài học.** Một khẳng định dạng "tổng toàn hệ thống bằng X" chỉ hợp lệ khi **có thứ gì đó ép nó
+đúng**, chứ không phải khi ta tin nó nên đúng. Trước khi viết bất biến toàn cục, hãy hỏi: *ai đang
+giữ cho nó đúng?* Nếu câu trả lời là một constraint trong CSDL — cứ viết. Nếu câu trả lời là "vì
+code của tôi cẩn thận" — hãy viết dưới dạng **hiệu số**, bởi phép đo tuyệt đối trên trạng thái dùng
+chung không đo code của bạn, nó đo cả những người hàng xóm.
+
+Và: **test xanh khi chạy riêng chưa chứng minh gì**. Ở dự án này, chạy riêng một class là cách
+nhanh — nhưng cửa duy nhất đáng tin vẫn là `mvn verify` đầy đủ. Đây là bug thứ hai (sau #4) sinh ra
+từ đúng một nguyên nhân gốc: **một CSDL, nhiều class test, không rollback**.
