@@ -398,3 +398,80 @@ chung không đo code của bạn, nó đo cả những người hàng xóm.
 Và: **test xanh khi chạy riêng chưa chứng minh gì**. Ở dự án này, chạy riêng một class là cách
 nhanh — nhưng cửa duy nhất đáng tin vẫn là `mvn verify` đầy đủ. Đây là bug thứ hai (sau #4) sinh ra
 từ đúng một nguyên nhân gốc: **một CSDL, nhiều class test, không rollback**.
+
+---
+
+## 9. Ghi audit làm cạn connection pool của chính đường tiền
+
+**Giai đoạn:** 1B Task 8 · **Ai bắt được:** dự báo trước khi chạy, thực nghiệm xác nhận
+
+**Triệu chứng.** Task 8 chạy 150 luồng rút tiền trên một ví. Plan viết rõ *"This test is expected to
+pass first time"*. Nó chạy **4 phút 37 giây rồi đỏ**, không phải vì số dư sai:
+
+```
+HikariPool-1 - Connection is not available, request timed out after 30001ms
+  (total=32, active=32, idle=0, waiting=0)
+...
+ConcurrentWithdrawalIT.moreThreadsThanMoneyStillLeavesTheBalanceExact:67 » Timeout
+```
+
+**Giả thuyết đầu tiên — và lần này nó đúng.** Trước khi chạy, khi vừa viết xong Task 7, tôi đã ghi
+dự báo vào file bàn giao: mỗi lệnh tiền giờ cần **hai connection cùng lúc**, và Task 8 đặt pool
+đúng bằng số luồng.
+
+| | |
+|---|---|
+| `MoneyService.withdraw` | mở transaction chính → **connection 1** |
+| `AuditLogger.record` với `REQUIRES_NEW` | treo transaction kia, mở transaction riêng → **connection 2** |
+| Task 8 | `newFixedThreadPool(32)`, `hikari.maximum-pool-size = 32` |
+
+32 luồng × 2 connection > 32. Log xác nhận từng chữ: `total=32, active=32, idle=0`.
+
+**Vì sao 31 luồng bị chặn vẫn làm cạn pool.** Điểm dễ hiểu nhầm: chỉ **một** luồng giữ được khoá
+dòng, 31 luồng kia đang chặn ở `SELECT ... FOR NO KEY UPDATE`. Nhưng luồng bị chặn **vẫn đang giữ
+connection của nó** — nó chặn *bên trong* một câu SQL, chứ không phải đang xếp hàng chờ connection.
+Nên 32 connection bị giữ chặt, và luồng thắng cuộc xin connection thứ hai thì không còn gì để lấy.
+
+**Vì sao plan sai.** Task 8 được viết **trước** Task 7. Ở thời điểm viết, mỗi lệnh tiền chỉ cần một
+connection và pool 32 là đúng. Task 7 thêm `REQUIRES_NEW` — một thay đổi trông hoàn toàn vô hại,
+không chạm dòng nào của logic khoá — và **làm gấp đôi nhu cầu connection của một tính năng khác**.
+
+**Cách sửa đúng.** Không đụng logic khoá, không đụng `AuditLogger`. Nâng pool lên **64** = 2 × số
+luồng, vẫn dưới `max_connections = 100` mặc định của PostgreSQL:
+
+```java
+registry.add("spring.datasource.hikari.maximum-pool-size", () -> "64");
+```
+
+Quan trọng ở chỗ *tại sao* 64 chứ không phải 33: với pool vừa đủ, thứ đang cạnh tranh là **hàng đợi
+connection**; với pool dư, thứ duy nhất còn cạnh tranh là **khoá dòng PostgreSQL** — đúng thứ mà
+bài test này sinh ra để đo. Pool chật không chỉ làm test đỏ, nó còn làm phép đo trở nên vô nghĩa.
+
+**Bẫy đo lường đi kèm — bug #6 quay lại.** Sau khi xanh, Maven báo:
+
+```
+Tests run: 1 ... Time elapsed: 111.4 s -- in ConcurrentWithdrawalIT
+```
+
+Suýt nữa ghi 111,4 giây làm số đo cho giai đoạn 1C. Đọc thẳng
+`target/failsafe-reports/TEST-...ConcurrentWithdrawalIT.xml` thì thấy:
+
+```
+testcase name="moreThreadsThanMoneyStillLeavesTheBalanceExact" time="11.974"
+```
+
+**Gần 100 giây kia là khởi động Spring context**, không phải 150 luồng rút tiền. Chạy trong full
+suite (context đã ấm) thì cả class chỉ mất **7,0 giây**. Con số đúng để 1C so sánh bốn chiến lược
+khoá là **11,97 s (chạy riêng) / 7,0 s (context ấm)** — không phải 111,4.
+
+**Bài học.** Hai cái, và cái thứ hai lớn hơn:
+
+1. **`REQUIRES_NEW` không miễn phí — nó tiêu một connection nữa, và tiêu *trong khi* connection thứ
+   nhất vẫn đang bị giữ.** Bất cứ chỗ nào có `REQUIRES_NEW` trên đường nóng, kích thước pool phải
+   ít nhất gấp đôi số luồng đồng thời. Cạn pool kiểu này **không** báo lỗi ngay: nó chờ đủ 30 giây
+   rồi mới nói, nên trông y hệt một vụ treo.
+2. **Đây là bug đầu tiên trong dự án được dự báo trước khi chạy.** Dự báo được không nhờ thông minh
+   hơn, mà nhờ *vừa mới viết* đoạn code gây ra nó và biết nó tiêu tài nguyên gì — rồi **đọc trước
+   task kế tiếp** thay vì làm xong task này là dừng. Chi phí: khoảng một phút đọc. Nếu không đọc
+   trước, cái giá là 4 phút 37 giây build đỏ cộng một cuộc điều tra từ số không, và rất dễ đi sai
+   hướng sang nghi ngờ logic khoá — thứ hoàn toàn vô can.

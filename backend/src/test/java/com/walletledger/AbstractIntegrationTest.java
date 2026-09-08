@@ -49,6 +49,14 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("app.jwt.secret", () -> "test-".repeat(10));
+        // Real contention needs real connections, and it needs TWO per thread: a money operation
+        // holds its own transaction open while AuditLogger opens a second one with REQUIRES_NEW.
+        // Sized at 32 — one per thread — the concurrency test deadlocks in the pool rather than
+        // in the database: every connection sits in a money transaction and none is left to
+        // record the audit row. Double it, and the only contention measured is the row lock,
+        // which is the contention the test exists to measure. Still well under PostgreSQL's
+        // default max_connections of 100.
+        registry.add("spring.datasource.hikari.maximum-pool-size", () -> "64");
     }
 
     /** Throwaway credential for accounts created inside a single test run. */
