@@ -37,6 +37,13 @@ public class LedgerPostingService {
     @Transactional
     public LedgerTransaction post(TransactionType type, long initiatedByUserId, String description,
                                   long fromAccountId, long toAccountId, BigDecimal amount) {
+        // The sign is checked here, not only in the request DTOs, because this method is the
+        // chokepoint and every service-layer caller reaches it without passing through them.
+        // A negative amount would reverse the direction of the posting: "pay 50 to B" becomes a
+        // withdrawal from B, which ck_wallet_non_negative allows for as long as B stays solvent.
+        if (amount.signum() <= 0) {
+            throw new IllegalArgumentException("Amount must be positive");
+        }
         if (fromAccountId == toAccountId) {
             throw new IllegalArgumentException("An account cannot pay itself");
         }

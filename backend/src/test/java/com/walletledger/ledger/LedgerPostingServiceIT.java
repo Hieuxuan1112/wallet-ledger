@@ -95,6 +95,39 @@ class LedgerPostingServiceIT extends AbstractIntegrationTest {
                 .isZero();
     }
 
+    /**
+     * The chokepoint has to defend itself. A negative amount reverses the direction of the
+     * posting, so without this guard "transfer -50 to the victim" is a withdrawal FROM the
+     * victim, and ck_wallet_non_negative does not object as long as the victim stays solvent.
+     * The HTTP DTOs reject negatives, but MoneyService and this class are both callable
+     * without them — Phase 4's AI layer is planned to be exactly such a caller.
+     */
+    @Test
+    void aNegativeAmountCannotDrainTheOtherAccount() {
+        Account attacker = newWallet();
+        Account victim = newWallet();
+        posting.post(TransactionType.DEPOSIT, victim.getOwnerUserId(), "seed",
+                SYSTEM_FUNDING, victim.getId(), new BigDecimal("50.0000"));
+
+        assertThatThrownBy(() -> posting.post(TransactionType.TRANSFER, attacker.getOwnerUserId(),
+                "drain", attacker.getId(), victim.getId(), new BigDecimal("-50.0000")))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(accounts.findById(victim.getId()).orElseThrow().getBalance())
+                .isEqualByComparingTo("50.0000");
+        assertThat(accounts.findById(attacker.getId()).orElseThrow().getBalance())
+                .isEqualByComparingTo("0");
+    }
+
+    @Test
+    void aZeroAmountIsRefused() {
+        Account wallet = newWallet();
+
+        assertThatThrownBy(() -> posting.post(TransactionType.DEPOSIT, wallet.getOwnerUserId(),
+                "nothing", SYSTEM_FUNDING, wallet.getId(), BigDecimal.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test
     void anAccountCannotPayItself() {
         Account wallet = newWallet();
