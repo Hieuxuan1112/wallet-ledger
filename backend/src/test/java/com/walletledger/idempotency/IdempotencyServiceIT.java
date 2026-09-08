@@ -10,10 +10,18 @@ import com.walletledger.money.MoneyService;
 import com.walletledger.money.TransactionView;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -23,6 +31,8 @@ class IdempotencyServiceIT extends AbstractIntegrationTest {
     private static final String ENDPOINT = "POST /api/v1/wallet/deposits";
 
     @Autowired private IdempotencyService idempotency;
+    @Autowired private IdempotentExecutor executor;
+    @Autowired private IdempotencyPayloadCodec codec;
     @Autowired private MoneyService money;
     @Autowired private AppUserRepository users;
     @Autowired private AccountRepository accounts;
@@ -84,6 +94,87 @@ class IdempotencyServiceIT extends AbstractIntegrationTest {
 
         assertThat(balanceOf(a)).isEqualByComparingTo("5.0000");
         assertThat(balanceOf(b)).isEqualByComparingTo("7.0000");
+    }
+
+    /**
+     * The catch in IdempotencyService exists for one thing: somebody else claimed this key first.
+     * Every other integrity failure — a rejected ledger balance, a violated CHECK — must reach the
+     * caller as itself, not disguised as "retry shortly", which is advice that makes those worse.
+     */
+    @Test
+    void anIntegrityFailureFromTheOperationIsNotDisguisedAsInProgress() {
+        AppUser user = newUserWithWallet();
+        String key = UUID.randomUUID().toString();
+
+        assertThatThrownBy(() -> idempotency.execute(user.getId(), key, ENDPOINT, "{}",
+                () -> {
+                    throw new DataIntegrityViolationException("ledger imbalance");
+                }))
+                .isNotInstanceOf(IdempotencyInProgressException.class);
+    }
+
+    /**
+     * Documents what the database actually raises, because guessing it wrong breaks idempotency
+     * silently. Through JPA, Hibernate maps a unique violation to the generic
+     * DataIntegrityViolationException — NOT to Spring's DuplicateKeyException, which only the
+     * JDBC translator produces. So the collision has to be recognised by constraint name.
+     */
+    @Test
+    void claimingTheSameKeyTwiceRaisesAViolationNamingTheUniqueIndex() {
+        AppUser user = newUserWithWallet();
+        String key = UUID.randomUUID().toString();
+        String hash = codec.hash("{\"amount\":\"1.0000\"}");
+
+        executor.claimAndRun(user.getId(), key, ENDPOINT, hash,
+                () -> money.deposit(user.getId(), new BigDecimal("1.0000"), "first"));
+
+        assertThatThrownBy(() -> executor.claimAndRun(user.getId(), key, ENDPOINT, hash,
+                () -> money.deposit(user.getId(), new BigDecimal("1.0000"), "second")))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasStackTraceContaining("uq_idempotency_user_key");
+    }
+
+    /**
+     * The other half of narrowing the catch: a genuine race on one key must still be answered,
+     * not turned into a raw 500. Every loser either replays the winner's response or is told the
+     * request is in progress; nothing else is acceptable, and the money moves exactly once.
+     */
+    @Test
+    void aRaceOnOneKeyChargesOnceAndRefusesTheLosersCleanly() throws Exception {
+        AppUser user = newUserWithWallet();
+        String key = UUID.randomUUID().toString();
+        String body = "{\"amount\":\"3.0000\"}";
+
+        int attempts = 16;
+        ExecutorService pool = Executors.newFixedThreadPool(attempts);
+        CountDownLatch startGate = new CountDownLatch(1);
+        List<Future<String>> results = new ArrayList<>(attempts);
+
+        for (int i = 0; i < attempts; i++) {
+            results.add(pool.submit(() -> {
+                startGate.await();
+                try {
+                    return idempotency.execute(user.getId(), key, ENDPOINT, body,
+                            () -> money.deposit(user.getId(), new BigDecimal("3.0000"), "race"))
+                            .transactionId().toString();
+                } catch (IdempotencyInProgressException e) {
+                    return "IN_PROGRESS";
+                }
+            }));
+        }
+        startGate.countDown();
+
+        // Anything other than a view or IdempotencyInProgressException surfaces here and fails.
+        for (Future<String> result : results) {
+            result.get(60, TimeUnit.SECONDS);
+        }
+        pool.shutdown();
+        assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(balanceOf(user)).isEqualByComparingTo("3.0000");
+        assertThat(jdbc.queryForObject(
+                "select count(*) from ledger_entry e join account a on a.id = e.account_id "
+                        + "where a.owner_user_id = ?", Integer.class, user.getId())).isEqualTo(1);
     }
 
     /**

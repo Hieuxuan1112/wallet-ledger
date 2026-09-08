@@ -1,6 +1,7 @@
 package com.walletledger.idempotency;
 
 import com.walletledger.money.TransactionView;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
@@ -14,6 +15,9 @@ import java.util.function.Supplier;
  */
 @Service
 public class IdempotencyService {
+
+    /** From V4__idempotency_and_audit.sql. */
+    private static final String KEY_UNIQUE_CONSTRAINT = "uq_idempotency_user_key";
 
     private final IdempotencyRecordRepository records;
     private final IdempotentExecutor executor;
@@ -40,11 +44,29 @@ public class IdempotencyService {
         try {
             return executor.claimAndRun(userId, key, endpoint, requestHash, action);
         } catch (DataIntegrityViolationException e) {
+            if (!isKeyCollision(e)) {
+                // Some other integrity rule refused the operation — a rejected ledger balance,
+                // a violated CHECK. Reporting that as "retry shortly" would be wrong twice: it
+                // hides a real failure, and the client takes the advice.
+                throw e;
+            }
             // Somebody claimed the key between our read and our insert. Their transaction has
             // not committed, so their response is not readable from here, and it must not be
             // guessed.
             throw new IdempotencyInProgressException();
         }
+    }
+
+    /**
+     * Identified by constraint name rather than by exception class. Through JPA, Hibernate maps
+     * every integrity failure — unique violations included — onto the same
+     * DataIntegrityViolationException; Spring's DuplicateKeyException only appears on the JDBC
+     * path. Catching DuplicateKeyException here would compile, pass a casual reading, and quietly
+     * disable idempotency. IdempotencyServiceIT holds that fact in place.
+     */
+    private boolean isKeyCollision(DataIntegrityViolationException e) {
+        return e.getCause() instanceof ConstraintViolationException violation
+                && KEY_UNIQUE_CONSTRAINT.equalsIgnoreCase(violation.getConstraintName());
     }
 
     /**
