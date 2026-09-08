@@ -1,0 +1,8 @@
+target/
+node_modules/
+dist/
+.env
+HANDOFF_CONTEXT.md
+*.log
+.idea/
+.vscode/
