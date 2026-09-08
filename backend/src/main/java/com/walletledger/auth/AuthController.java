@@ -24,4 +24,9 @@ public class AuthController {
         AppUser user = authService.register(request.username(), request.password());
         return new RegisterResponse(user.getId(), user.getUsername());
     }
+
+    @PostMapping("/login")
+    public LoginResponse login(@Valid @RequestBody LoginRequest request) {
+        return authService.login(request.username(), request.password());
+    }
 }

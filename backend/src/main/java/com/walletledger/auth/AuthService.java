@@ -7,17 +7,29 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Optional;
+
 @Service
 public class AuthService {
 
     private final AppUserRepository users;
     private final AccountRepository accounts;
     private final PasswordEncoder passwordEncoder;
+    private final TokenService tokenService;
 
-    public AuthService(AppUserRepository users, AccountRepository accounts, PasswordEncoder passwordEncoder) {
+    /**
+     * A real BCrypt hash of a fixed string, computed once at startup. It is compared against
+     * when the username does not exist, so that path costs the same as a genuine check.
+     */
+    private final String dummyHash;
+
+    public AuthService(AppUserRepository users, AccountRepository accounts,
+                       PasswordEncoder passwordEncoder, TokenService tokenService) {
         this.users = users;
         this.accounts = accounts;
         this.passwordEncoder = passwordEncoder;
+        this.tokenService = tokenService;
+        this.dummyHash = passwordEncoder.encode("timing-equaliser-not-a-credential");
     }
 
     /**
@@ -40,5 +52,22 @@ public class AuthService {
         } catch (DataIntegrityViolationException e) {
             throw new UsernameAlreadyTakenException(username);
         }
+    }
+
+    /**
+     * BCrypt runs on every call, including for usernames that do not exist. Returning early
+     * for an unknown user makes that response measurably faster than a wrong-password
+     * response, which is enough to enumerate valid accounts by timing alone.
+     */
+    @Transactional(readOnly = true)
+    public LoginResponse login(String username, String rawPassword) {
+        Optional<AppUser> found = users.findByUsername(username);
+        String hash = found.map(AppUser::getPasswordHash).orElse(dummyHash);
+        boolean matches = passwordEncoder.matches(rawPassword, hash);
+
+        if (found.isEmpty() || !matches) {
+            throw new InvalidCredentialsException();
+        }
+        return new LoginResponse(tokenService.issueAccessToken(found.get()), null);
     }
 }
