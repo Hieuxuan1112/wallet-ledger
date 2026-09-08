@@ -13,6 +13,12 @@ spring:
       hibernate.jdbc.time_zone: UTC
   flyway:
     enabled: true
+  # Without this, a validation failure returns Spring Boot's older error body while our own
+  # exceptions return RFC 7807, so the API would speak two error formats depending on which
+  # layer rejected the request.
+  mvc:
+    problemdetails:
+      enabled: true
 
 server:
   port: ${API_PORT:8091}
