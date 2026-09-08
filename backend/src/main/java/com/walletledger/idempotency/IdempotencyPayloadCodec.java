@@ -35,6 +35,15 @@ public class IdempotencyPayloadCodec {
         }
     }
 
+    /** Records serialise their components in declaration order, so this is stable. */
+    public String canonicalise(Object request) {
+        try {
+            return objectMapper.writeValueAsString(request);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Could not canonicalise a request", e);
+        }
+    }
+
     public String hash(String requestBody) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

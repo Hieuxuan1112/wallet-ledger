@@ -28,6 +28,9 @@ public class IdempotencyService {
 
     public TransactionView execute(long userId, String key, String endpoint, String requestBody,
                                    Supplier<TransactionView> action) {
+        if (key == null || key.length() < 8 || key.length() > 64) {
+            throw new InvalidIdempotencyKeyException();
+        }
         String requestHash = codec.hash(requestBody);
 
         Optional<IdempotencyRecord> existing = records.findByUserIdAndIdemKey(userId, key);
