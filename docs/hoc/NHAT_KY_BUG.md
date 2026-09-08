@@ -197,3 +197,47 @@ framework nào cả — nó nằm ở **chỗ hai phạm vi vòng đời không 
 ("connection refused") xuất hiện cách nguyên nhân ("ai gọi `stop()`") rất xa. Cách lần ra là
 đếm: *bao nhiêu container được tạo, bao nhiêu port xuất hiện trong lỗi?* Hai con số không khớp
 là chỉ thẳng vào nguyên nhân.
+
+---
+
+## 5. `CHAR(64)` làm Hibernate từ chối khởi động
+
+**Giai đoạn:** Task 7 · **Ai bắt được:** bước đỏ của TDD, ngay lúc tạo context
+
+**Triệu chứng.** Toàn bộ context không dựng được:
+
+```
+Schema-validation: wrong column type encountered in column [token_hash] in table [refresh_token];
+found [bpchar (Types#CHAR)], but expecting [varchar(64) (Types#VARCHAR)]
+```
+
+**Nguyên nhân.** `V1__auth.sql` khai báo `token_hash CHAR(64)`. Hibernate ánh xạ `String` sang
+`VARCHAR` theo mặc định, và `ddl-auto: validate` so kiểu JDBC chứ không chỉ so tên cột —
+`Types.CHAR` (1) khác `Types.VARCHAR` (12).
+
+**Hai cách sửa, và vì sao chọn cách thứ hai.**
+
+| Cách | Việc phải làm | Đánh giá |
+|---|---|---|
+| Dạy Hibernate chấp nhận | `@JdbcTypeCode(SqlTypes.CHAR)` trên field | Hết lỗi, nhưng **giữ nguyên kiểu dữ liệu sai** |
+| Sửa schema | `ALTER COLUMN token_hash TYPE VARCHAR(64)` | Sửa đúng vấn đề |
+
+`CHAR(n)` của PostgreSQL **đệm khoảng trắng** vào cuối và **bỏ qua khoảng trắng cuối khi so
+sánh**: `'abc'` và `'abc   '` bằng nhau. Với một phép tra cứu hash chính xác dùng cho bảo mật,
+đó là hợp đồng sai — hôm nay chưa cắn vì hash luôn đúng 64 ký tự, nhưng kiểu dữ liệu đang nói
+sai về ý định. Chính tài liệu PostgreSQL cũng khuyên không dùng `char(n)`.
+
+Nên lỗi của Hibernate ở đây không phải phiền toái — **nó đang chỉ đúng một khuyết điểm thật**.
+
+**Cách sửa.** `V1` đã commit nên **không được sửa** — đổi file cũ sẽ làm sai checksum của Flyway
+ở mọi máy đã chạy nó. Thêm migration mới:
+
+```sql
+-- backend/src/main/resources/db/migration/V3__refresh_token_hash_varchar.sql
+ALTER TABLE refresh_token ALTER COLUMN token_hash TYPE VARCHAR(64);
+```
+
+**Bài học.** `ddl-auto: validate` không phải thủ tục hành chính. Nó là một phép kiểm tra thật,
+và ở đây nó bắt được thứ mà không test nào bắt nổi: schema chạy đúng, test SQL thô ở Task 2
+cũng xanh, chỉ khi Hibernate soi kiểu mới lộ ra. **Quy tắc:** không bao giờ sửa migration đã
+commit — luôn thêm cái mới.

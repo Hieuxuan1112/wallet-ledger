@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class AuthService {
@@ -16,6 +17,7 @@ public class AuthService {
     private final AccountRepository accounts;
     private final PasswordEncoder passwordEncoder;
     private final TokenService tokenService;
+    private final RefreshTokenService refreshTokens;
 
     /**
      * A real BCrypt hash of a fixed string, computed once at startup. It is compared against
@@ -24,11 +26,13 @@ public class AuthService {
     private final String dummyHash;
 
     public AuthService(AppUserRepository users, AccountRepository accounts,
-                       PasswordEncoder passwordEncoder, TokenService tokenService) {
+                       PasswordEncoder passwordEncoder, TokenService tokenService,
+                       RefreshTokenService refreshTokens) {
         this.users = users;
         this.accounts = accounts;
         this.passwordEncoder = passwordEncoder;
         this.tokenService = tokenService;
+        this.refreshTokens = refreshTokens;
         this.dummyHash = passwordEncoder.encode("timing-equaliser-not-a-credential");
     }
 
@@ -59,7 +63,7 @@ public class AuthService {
      * for an unknown user makes that response measurably faster than a wrong-password
      * response, which is enough to enumerate valid accounts by timing alone.
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public LoginResponse login(String username, String rawPassword) {
         Optional<AppUser> found = users.findByUsername(username);
         String hash = found.map(AppUser::getPasswordHash).orElse(dummyHash);
@@ -68,6 +72,23 @@ public class AuthService {
         if (found.isEmpty() || !matches) {
             throw new InvalidCredentialsException();
         }
-        return new LoginResponse(tokenService.issueAccessToken(found.get()), null);
+        AppUser user = found.get();
+        // A new family per login, which is what makes logout device-scoped.
+        String refreshToken = refreshTokens.issue(user.getId(), UUID.randomUUID());
+        return new LoginResponse(tokenService.issueAccessToken(user), refreshToken);
+    }
+
+    @Transactional
+    public LoginResponse refresh(String presentedRefreshToken) {
+        RefreshToken consumed = refreshTokens.consume(presentedRefreshToken);
+        AppUser user = users.findById(consumed.getUserId())
+                .orElseThrow(InvalidCredentialsException::new);
+        String rotated = refreshTokens.issue(user.getId(), consumed.getFamilyId());
+        return new LoginResponse(tokenService.issueAccessToken(user), rotated);
+    }
+
+    @Transactional
+    public void logout(String presentedRefreshToken) {
+        refreshTokens.revokeFamilyOf(presentedRefreshToken);
     }
 }
