@@ -3,6 +3,8 @@ node_modules/
 dist/
 .env
 HANDOFF_CONTEXT.md
+# Personal project-bootstrap prompt: contains CV-level personal details.
+PROMPT_KHOI_TAO.md
 *.log
 .idea/
 .vscode/
