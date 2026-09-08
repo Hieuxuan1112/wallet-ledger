@@ -709,11 +709,21 @@ Expected: `Tests run: 4, Failures: 0`.
 
 - [ ] **Step 7: Confirm the lock is actually being taken**
 
-A passing test does not prove `FOR UPDATE` reached the database. Run once with SQL logging and read the statement:
+A passing test does not prove the lock reached the database. Run once with SQL logging and read
+the statement. Use the logging level, **not** `spring.jpa.show-sql`, which does not take effect
+through a `-D` here:
 
-Run: `mvnd -B verify "-Dit.test=LedgerPostingServiceIT" "-DfailIfNoSpecifiedTests=false" "-Dspring.jpa.show-sql=true"`
+Run: `mvnd -B verify "-Dit.test=LedgerPostingServiceIT" "-DfailIfNoSpecifiedTests=false" "-Dlogging.level.org.hibernate.SQL=DEBUG"`
 
-Expected: the account selects appear as `select ... from account a1_0 where a1_0.id=? for update`. If `for update` is absent, `@Lock` was not applied and every concurrency guarantee below is void. Record the observed statement in the bug log either way — a green test that proves nothing is worse than a red one.
+Expected: the account selects end in **`for no key update`**, not `for update`. Hibernate 6 maps
+`PESSIMISTIC_WRITE` to PostgreSQL's `FOR NO KEY UPDATE`, which still conflicts with another
+`FOR NO KEY UPDATE` on the same row — so two balance updaters still exclude each other — while
+leaving `FOR KEY SHARE` free. That matters: `FOR KEY SHARE` is what PostgreSQL takes on an
+`account` row when somebody inserts a `ledger_entry` referencing it, so the weaker lock is the
+better one here. Do not "fix" it to `FOR UPDATE`.
+
+If **no** SQL appears at all, the logging is off, not the code. Grep for `insert` too before
+concluding anything about the lock.
 
 - [ ] **Step 8: Commit**
 

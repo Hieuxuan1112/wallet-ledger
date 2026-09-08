@@ -241,3 +241,90 @@ ALTER TABLE refresh_token ALTER COLUMN token_hash TYPE VARCHAR(64);
 và ở đây nó bắt được thứ mà không test nào bắt nổi: schema chạy đúng, test SQL thô ở Task 2
 cũng xanh, chỉ khi Hibernate soi kiểu mới lộ ra. **Quy tắc:** không bao giờ sửa migration đã
 commit — luôn thêm cái mới.
+
+---
+
+## 6. Dụng cụ đo làm hỏng phép đo
+
+**Giai đoạn:** 1B Task 2 · **Ai bắt được:** đối chiếu exit code với báo cáo failsafe
+
+**Triệu chứng.** `mvn verify` in ra `Tests run: 40, Failures: 0, Errors: 0, Skipped: 0` nhưng
+tiến trình trả về **exit code 255**, và dòng `BUILD SUCCESS` không hề xuất hiện.
+
+**Giả thuyết đầu tiên.** "Có gì đó hỏng sau khi test chạy xong — plugin verify chăng?" **Sai.**
+
+**Bằng chứng.** `target/failsafe-reports/failsafe-summary.xml`:
+
+```xml
+<completed>40</completed><errors>0</errors><failures>0</failures><skipped>0</skipped>
+<failureMessage xsi:nil="true"/>
+```
+
+Không có lỗi nào. Build thật sự thành công.
+
+**Nguyên nhân gốc.** Lệnh tôi dùng để lọc log:
+
+```powershell
+... mvn -B verify 2>&1 | Select-String -Pattern "..." | Select-Object -First 15
+```
+
+`Select-Object -First N` **dừng pipeline** ngay khi đủ N phần tử. PowerShell khi đó chấm dứt
+tiến trình đứng trước — tức là `docker`. Lần này có hơn 15 dòng khớp nên pipeline bị cắt giữa
+chừng, container bị giết, và exit code 255 là của việc bị giết chứ không phải của Maven. Những
+lần trước dùng `-First 25` hoặc `-First 30`, số dòng khớp chưa chạm ngưỡng nên không xảy ra.
+
+**Cách sửa.** Đặt ngưỡng đủ lớn, hoặc bỏ hẳn `-First`, hoặc ghi log ra file rồi đọc.
+
+**Bài học.** Bug số 8 của SlangWord là *dấu tích xanh không chứng minh gì*. Đây là mặt còn lại
+của cùng một đồng xu: **dấu đỏ cũng có thể không chứng minh gì** — nó có thể là lỗi của dụng cụ
+đo. Cách phân biệt là đối chiếu **hai nguồn độc lập**: exit code của tiến trình, và báo cáo mà
+chính công cụ ghi ra đĩa. Khi hai nguồn mâu thuẫn, nghi ngờ cái nằm gần mình hơn trước.
+
+---
+
+## 7. Hibernate khoá bằng `FOR NO KEY UPDATE`, không phải `FOR UPDATE`
+
+**Giai đoạn:** 1B Task 3 · **Ai bắt được:** bước bắt buộc "đọc SQL thật" trong plan
+
+**Triệu chứng.** Năm test của `LedgerPostingServiceIT` đều xanh. Nhưng khi bật log SQL rồi tìm
+chuỗi `for update` thì **không có dòng nào**.
+
+**Giả thuyết đầu tiên.** "`@Lock(PESSIMISTIC_WRITE)` không được áp — toàn bộ đảm bảo đồng thời
+phía dưới là vô nghĩa." **Sai**, và may là đã kiểm trước khi đi sửa.
+
+**Sự thật.** Đổi cách bật log (`-Dspring.jpa.show-sql=true` không có tác dụng; phải dùng
+`-Dlogging.level.org.hibernate.SQL=DEBUG`) thì thấy:
+
+```
+select a1_0.id,a1_0.balance,a1_0.owner_user_id,a1_0.type,a1_0.version
+  from account a1_0 where a1_0.id=? for no key update
+```
+
+Khoá **có** được áp. Hibernate 6 trên PostgreSQL ánh xạ `PESSIMISTIC_WRITE` thành
+`FOR NO KEY UPDATE` chứ không phải `FOR UPDATE`. Chuỗi `for update` không xuất hiện vì
+`for no key update` không chứa nó liền mạch — phép tìm của tôi sai, không phải khoá sai.
+
+**Bốn mức khoá dòng của PostgreSQL, từ yếu tới mạnh:**
+
+| Mức | Xung đột với |
+|---|---|
+| `FOR KEY SHARE` | `FOR UPDATE` |
+| `FOR SHARE` | `FOR NO KEY UPDATE`, `FOR UPDATE` |
+| **`FOR NO KEY UPDATE`** | `FOR SHARE`, `FOR NO KEY UPDATE`, `FOR UPDATE` |
+| `FOR UPDATE` | tất cả |
+
+Hai giao dịch cùng lấy `FOR NO KEY UPDATE` trên một dòng **vẫn chặn nhau** — đúng thứ ta cần:
+loại trừ lẫn nhau giữa hai bên cùng sửa số dư. Khác biệt duy nhất so với `FOR UPDATE` là nó
+**không** chặn `FOR KEY SHARE`.
+
+**Và ở đây điều đó lại tốt hơn.** `FOR KEY SHARE` chính là khoá mà PostgreSQL tự lấy trên dòng
+`account` khi có ai đó chèn một dòng `ledger_entry` tham chiếu tới nó (kiểm tra khoá ngoại). Nếu
+ép dùng `FOR UPDATE`, một giao dịch đang giữ khoá ví A sẽ chặn luôn giao dịch khác chỉ đang ghi
+bút toán tham chiếu ví A. `FOR NO KEY UPDATE` tránh được, và vẫn đủ mạnh vì ta không đổi khoá
+chính. Đây là mặc định **đúng**, không phải mặc định cần sửa.
+
+**Bài học.** Bước "đọc SQL thật" trong plan đáng giá đúng như kỳ vọng — nhưng nó cũng cho thấy
+một cái bẫy thứ hai: **kỳ vọng của chính mình về chuỗi cần tìm cũng có thể sai**. Khi phép tìm
+không ra kết quả, hãy hỏi "công cụ có đang chạy không?" trước khi hỏi "code có sai không". Ở đây
+`show-sql` im lặng hoàn toàn, và chính sự im lặng tuyệt đối đó — không một dòng SQL nào, kể cả
+`insert` — mới là dấu hiệu rằng dụng cụ đo chưa bật, chứ không phải mã hỏng.
