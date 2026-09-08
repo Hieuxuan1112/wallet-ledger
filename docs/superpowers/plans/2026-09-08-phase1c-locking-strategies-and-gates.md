@@ -39,6 +39,20 @@ Taken from `<testcase time=...>` in `target/failsafe-reports/TEST-*.xml`, **not*
 | `ConcurrentWithdrawalIT` — 150 threads withdraw 1 from a wallet holding 100 | **11.974 s** |
 | `TransferDeadlockIT` — 50 A→B + 50 B→A | **13.019 s** |
 
+**Measured again during Task 1, same code, same pessimistic strategy, with the JaCoCo agent
+attached (which should make it slower, not faster):**
+
+| Test | Baseline above | Task 1 re-run |
+|---|---|---|
+| `ConcurrentWithdrawalIT` | 11.974 s | **6.396 s** |
+| `TransferDeadlockIT` | 13.019 s | **3.131 s** |
+
+Two to four times faster with no change to the locking. **Run-to-run noise on this machine is
+larger than any difference the four strategies are likely to show.** Task 7 must therefore not
+compare four separate Maven runs — that table would be measuring background load, not locking.
+Run all four strategies inside one `mvnd -B verify`, and repeat the run at least twice, reporting
+the spread rather than a single figure.
+
 ---
 
 ## File structure
@@ -63,7 +77,7 @@ Taken from `<testcase time=...>` in `target/failsafe-reports/TEST-*.xml`, **not*
 **Files:**
 - Modify: `backend/pom.xml`
 
-- [ ] **Step 1: Add the plugin**
+- [x] **Step 1: Add the plugin**
 
 Add to `<properties>`:
 
@@ -140,7 +154,7 @@ Add to `<build><plugins>`:
       </plugin>
 ```
 
-- [ ] **Step 2: Measure before deciding anything**
+- [x] **Step 2: Measure before deciding anything**
 
 Run: `mvnd -B verify`
 
@@ -150,10 +164,16 @@ Run: `mvnd -B verify`
 Record it here, in this plan file, as a fact:
 
 ```
-Measured coverage, first run: ____% instruction, ____% branch
+Measured coverage, first run: 92.36% instruction, 83.33% branch
+  instructions 1800 covered / 149 missed (1949 total)
+  branches       45 covered /   9 missed (54 total)
+  Read from target/site/jacoco/jacoco.csv after `mvnd -B verify`, 80 tests green.
+  Both gates pass untouched. Caveat worth knowing: the branch denominator is only 54,
+  so a single uncovered branch moves the figure by ~1.9 points. The branch gate is
+  therefore far more brittle than the instruction gate on a codebase this size.
 ```
 
-- [ ] **Step 3: React to the number honestly**
+- [x] **Step 3: React to the number honestly**
 
 | If the number is | Do this |
 |---|---|

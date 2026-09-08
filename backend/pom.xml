@@ -20,6 +20,7 @@
     <java.version>21</java.version>
     <jjwt.version>0.13.0</jjwt.version>
     <archunit.version>1.5.0</archunit.version>
+    <jacoco.version>0.8.13</jacoco.version>
   </properties>
 
   <dependencies>
@@ -120,6 +121,70 @@
               <goal>integration-test</goal>
               <goal>verify</goal>
             </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>${jacoco.version}</version>
+        <executions>
+          <execution>
+            <id>prepare-agent</id>
+            <goals><goal>prepare-agent</goal></goals>
+          </execution>
+          <!-- Almost every test here is an integration test, so the failsafe run is where
+               the coverage actually comes from. A surefire-only report would read ~0%. -->
+          <execution>
+            <id>prepare-agent-integration</id>
+            <goals><goal>prepare-agent-integration</goal></goals>
+          </execution>
+          <execution>
+            <id>merge-results</id>
+            <phase>verify</phase>
+            <goals><goal>merge</goal></goals>
+            <configuration>
+              <fileSets>
+                <fileSet>
+                  <directory>${project.build.directory}</directory>
+                  <includes><include>*.exec</include></includes>
+                </fileSet>
+              </fileSets>
+              <destFile>${project.build.directory}/jacoco-merged.exec</destFile>
+            </configuration>
+          </execution>
+          <execution>
+            <id>report</id>
+            <phase>verify</phase>
+            <goals><goal>report</goal></goals>
+            <configuration>
+              <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+            </configuration>
+          </execution>
+          <execution>
+            <id>check</id>
+            <phase>verify</phase>
+            <goals><goal>check</goal></goals>
+            <configuration>
+              <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>INSTRUCTION</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.85</minimum>
+                    </limit>
+                    <limit>
+                      <counter>BRANCH</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.75</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
           </execution>
         </executions>
       </plugin>
