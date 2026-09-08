@@ -124,6 +124,49 @@ class MoneyEndpointsIT extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.balance").value("25.0000"));
     }
 
+    /**
+     * One key belongs to one request, and the endpoint is part of what makes a request. Deposits
+     * and withdrawals share AmountRequest, so their canonical JSON is byte-identical and the
+     * request hash alone cannot tell them apart.
+     */
+    @Test
+    void aKeyFromOneEndpointCannotBeReplayedOnAnother() throws Exception {
+        String token = accessTokenFor("cross-" + UUID.randomUUID());
+        String idemKey = key();
+        String body = """
+                {"amount":"10.0000"}""";
+
+        mockMvc.perform(deposit(token, idemKey, body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.type").value("DEPOSIT"));
+
+        mockMvc.perform(post("/api/v1/wallet/withdrawals")
+                        .header(HttpHeaders.AUTHORIZATION, bearer(token))
+                        .header("Idempotency-Key", idemKey)
+                        .contentType(APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.title").value("Idempotency key reused"));
+
+        mockMvc.perform(get("/api/v1/wallet").header(HttpHeaders.AUTHORIZATION, bearer(token)))
+                .andExpect(jsonPath("$.balance").value("10.0000"));
+    }
+
+    /** Closes the 422 line of the phase's definition of done at the HTTP layer, not just in the service. */
+    @Test
+    void reusingAKeyWithADifferentBodyIsUnprocessableOverHttp() throws Exception {
+        String token = accessTokenFor("reuse-" + UUID.randomUUID());
+        String idemKey = key();
+
+        mockMvc.perform(deposit(token, idemKey, """
+                {"amount":"10.0000"}""")).andExpect(status().isCreated());
+
+        mockMvc.perform(deposit(token, idemKey, """
+                {"amount":"99.0000"}"""))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.title").value("Idempotency key reused"));
+    }
+
     @Test
     void anUnauthenticatedMoneyRequestIsRejected() throws Exception {
         mockMvc.perform(post("/api/v1/wallet/deposits")

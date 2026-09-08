@@ -35,7 +35,7 @@ public class IdempotencyService {
 
         Optional<IdempotencyRecord> existing = records.findByUserIdAndIdemKey(userId, key);
         if (existing.isPresent()) {
-            return replay(existing.get(), requestHash);
+            return replay(existing.get(), endpoint, requestHash);
         }
         try {
             return executor.claimAndRun(userId, key, endpoint, requestHash, action);
@@ -47,8 +47,15 @@ public class IdempotencyService {
         }
     }
 
-    private TransactionView replay(IdempotencyRecord record, String requestHash) {
-        if (!record.getRequestHash().equals(requestHash)) {
+    /**
+     * The endpoint is part of the identity of a request, not decoration. Deposits and withdrawals
+     * carry the same AmountRequest, so their canonical JSON is byte-identical and the hash alone
+     * cannot tell a deposit from a withdrawal of the same amount. Comparing only the hash let one
+     * key replay across endpoints: a withdrawal returned the deposit's stored response, and the
+     * money never moved.
+     */
+    private TransactionView replay(IdempotencyRecord record, String endpoint, String requestHash) {
+        if (!record.getEndpoint().equals(endpoint) || !record.getRequestHash().equals(requestHash)) {
             throw new IdempotencyKeyReusedException();
         }
         if (!record.isComplete()) {

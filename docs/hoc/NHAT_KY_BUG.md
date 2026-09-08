@@ -475,3 +475,71 @@ khoá là **11,97 s (chạy riêng) / 7,0 s (context ấm)** — không phải 1
    task kế tiếp** thay vì làm xong task này là dừng. Chi phí: khoảng một phút đọc. Nếu không đọc
    trước, cái giá là 4 phút 37 giây build đỏ cộng một cuộc điều tra từ số không, và rất dễ đi sai
    hướng sang nghi ngờ logic khoá — thứ hoàn toàn vô can.
+
+---
+
+## 10. Hai lỗ hổng tiền lọt qua 9 task TDD — và qua cả lần rà bảo mật
+
+**Giai đoạn:** 1B, sau khi code xong 9/9 task · **Ai bắt được:** `/code-review`, không phải test
+
+**Triệu chứng.** 68 test xanh, 9 task xong đúng plan, rà bảo mật đã chạy. Rồi rà chất lượng tìm ra
+**hai lỗi tiền thật**, cả hai đều nằm trong code đã "xanh" từ nhiều task trước.
+
+### Lỗ hổng A — chốt chặn không tự bảo vệ
+
+`LedgerPostingService` được chính plan gọi là *"the chokepoint"*, nơi duy nhất tiền dịch chuyển.
+Nó kiểm `fromAccountId == toAccountId`, nhưng **không kiểm dấu của `amount`**.
+
+```java
+post(TRANSFER, caller, "x", víCủaCaller, víCủaNạnNhân, new BigDecimal("-50"))
+  → from.debit(-50)  → ví caller  TĂNG 50
+  → to.credit(-50)   → ví nạn nhân GIẢM 50
+```
+
+`ck_wallet_non_negative` chỉ chặn khi nạn nhân xuống dưới 0 — nạn nhân còn tiền thì lệnh
+**commit thành công**.
+
+Bước đỏ nói đúng một câu, và câu đó là bằng chứng: **`Expecting code to raise a throwable`** —
+không có ngoại lệ nào cả, tiền của nạn nhân bị rút thật.
+
+Vì sao 9 task TDD không bắt được: `@DecimalMin("0.0001")` trên DTO chặn ở tầng HTTP, nên **mọi test
+đi qua endpoint đều xanh**. Nhưng `MoneyService` và `LedgerPostingService` đều public, đều gọi được
+thẳng — và giai đoạn 4 (lớp AI) đã được thiết kế để gọi thẳng tầng service.
+
+### Lỗ hổng B — một khoá idempotency dùng lại được ở endpoint khác
+
+`replay()` chỉ so `request_hash`. Cột `endpoint` **có** được lưu nhưng **không** được so.
+`deposit` và `withdrawal` dùng chung `AmountRequest` ⇒ `canonicalise` sinh **cùng một chuỗi JSON**.
+
+Probe HTTP thật: nạp 10 với khoá K → 201. **Rút** 10 với **cùng khoá K** → **201, `type: DEPOSIT`**,
+số dư vẫn `10.0000`. Lệnh rút **không hề xảy ra**, client nhận mã thành công.
+
+### Một món quà ngoài dự kiến từ bước đỏ
+
+Test `aZeroAmountIsRefused` (viết cho lỗ hổng A) khi đỏ lại ném:
+
+```
+DataIntegrityViolationException: violates check constraint "ck_entry_amount_non_zero"
+```
+
+Số 0 **có** bị chặn — nhưng bởi CHECK ở tận DB, và ngoại lệ đó là `DataIntegrityViolationException`.
+Mà `IdempotencyService` đang `catch (DataIntegrityViolationException)` rồi biến **mọi** thứ bắt được
+thành **409 "Request in progress. Retry shortly."** Nghĩa là một lệnh 0 đồng qua HTTP sẽ khiến client
+nhận 409 và **thử lại mãi**. Đây là bằng chứng cụ thể cho phát hiện #3 của lần rà — có được **miễn
+phí** từ bước đỏ của một lỗi khác.
+
+**Cách sửa.** A: `if (amount.signum() <= 0) throw new IllegalArgumentException(...)` ngay đầu
+`post()`. B: đưa `endpoint` vào phép so trong `replay()`, cùng `getEndpoint()` trên
+`IdempotencyRecord`. Cả hai đều một dòng logic; cái khó là **nhìn ra**, không phải sửa.
+
+**Bài học — cái này đắt hơn cả hai lỗ hổng.**
+
+1. **TDD chỉ chứng minh những gì bạn nghĩ tới để kiểm.** 68 test xanh không nói gì về đầu vào mà
+   không test nào từng gửi. Test viết theo plan thì phủ đúng phạm vi plan tưởng tượng ra — không
+   hơn một milimét.
+2. **Validation ở biên không thay được validation ở chốt chặn.** `@DecimalMin` trên DTO làm mọi
+   test HTTP xanh và tạo cảm giác an toàn giả. Một hàm tự gọi mình là chốt chặn thì phải **tự** kiểm
+   đầu vào, vì lời hứa "mọi thứ đều đi qua đây" chỉ đúng khi *ở đây* không tin ai cả.
+3. **Rà bảo mật và rà chất lượng không thừa nhau.** Lần rà bảo mật soi authz, injection, rò rỉ,
+   IDOR — và **bỏ lọt lỗ hổng A hoàn toàn**. Nó chỉ lộ ra khi đọc lại `post()` với câu hỏi khác:
+   *"hàm này đang tin gì ở đầu vào của nó?"* Cùng một đoạn code, hai câu hỏi, hai kết quả.

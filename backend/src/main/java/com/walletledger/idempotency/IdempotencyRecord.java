@@ -53,6 +53,10 @@ public class IdempotencyRecord {
         return responseBody != null;
     }
 
+    public String getEndpoint() {
+        return endpoint;
+    }
+
     public String getRequestHash() {
         return requestHash;
     }
