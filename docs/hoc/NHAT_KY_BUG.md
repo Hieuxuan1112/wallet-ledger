@@ -775,3 +775,41 @@ chung (`max_connections`), câu hỏi đúng không phải "tổng các con số
 "context nào **thật sự** sẽ chạm gần tới trần của nó" — và câu trả lời chỉ lấy được từ log thật
 (dòng `Starting ... using Java` đếm được context, tải thật của từng bài test quyết định phần còn
 lại), không phải từ phép cộng trên giấy.
+
+## 15. `balanceAfter` của refund đọc nhầm tài khoản — chỉ lộ ra khi chạy cả bộ
+
+**Giai đoạn:** 2A Task 3 · **Ai bắt được:** `RefundEndpointIT` xanh khi chạy riêng, đỏ trong
+`mvn verify` đầy đủ
+
+**Triệu chứng.** `RefundEndpointIT.refundingADepositReturns201WithTheReversalType` chạy một mình
+(`-Dit.test=RefundEndpointIT`) thì xanh 2/2. Chạy trong `mvn verify` đầy đủ (102 test) thì đỏ đúng
+một chỗ:
+
+```
+JSON path "$.balanceAfter" expected:<0.0000> but was:<-2705.5000>
+```
+
+Nạp $25, refund lại đúng $25 — số dư ví phải quay về `0.0000`. Con số `-2705.5000` không liên quan
+gì tới $25 cả, và chỉ xuất hiện khi chạy sau một loạt test tiền khác trong cùng bộ.
+
+**Truy vết.** `RefundService.refund()` (dòng 67, trước khi sửa) đọc số dư sau refund bằng
+`accounts.findById(debited.getAccountId())`, kèm comment "debited.getAccountId() is where the
+refunded money lands". Comment đúng về hướng tiền, sai về tài khoản: với một khoản nạp (deposit),
+`debited` (entry âm) trong giao dịch gốc chính là `SYSTEM_FUNDING` — tài khoản hệ thống **dùng
+chung cho mọi user trong toàn bộ JVM test**, không phải ví của người gọi. Số dư của nó tích luỹ từ
+mọi lần nạp/rút của mọi test khác đã chạy trước đó trong cùng tiến trình — chạy một mình thì gần 0
+nên trông như đúng, chạy sau hàng chục test tiền khác thì mang một số cộng dồn ngẫu nhiên.
+
+**Vì sao không đơn giản là đổi sang `credited.getAccountId()`.** Với deposit, ví của người gọi là
+bên `credited` (nhận tiền). Nhưng với withdrawal hoặc transfer, ví của người gọi lại là bên
+`debited` (mất tiền) — bên `credited` khi đó là `SYSTEM_PAYOUT` hoặc ví người khác. Không có quy
+tắc "credited hay debited" cố định đúng cho cả ba loại giao dịch.
+
+**Cách sửa.** Tra thẳng ví của người gọi bằng `accounts.findWalletIdByOwnerUserId(callerId)` —
+đúng hàm `MoneyService` đã dùng cho deposit/withdraw/transfer — thay vì suy đoán từ dấu của entry.
+
+**Bài học.** Một tài khoản hệ thống dùng chung (`SYSTEM_FUNDING`, `SYSTEM_PAYOUT`) là trạng thái
+toàn cục giữa các test, giống bài học bug #8 — nhưng lần này không lộ ra ở việc *test này ảnh hưởng
+test kia*, mà lộ ra ở việc *code sản phẩm đọc nhầm* tài khoản dùng chung thay vì tài khoản của
+người dùng. Test chạy đơn lẻ (`-Dit.test=X`) xanh không chứng minh gì về tài khoản dùng chung toàn
+JVM — chỉ `mvn verify` đầy đủ mới cho tài khoản đó đủ "lịch sử" để lộ giá trị sai.
