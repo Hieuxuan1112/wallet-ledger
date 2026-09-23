@@ -32,6 +32,9 @@ public class LedgerEntry {
     @Column(nullable = false, precision = 19, scale = 4)
     private BigDecimal amount;
 
+    @Column(name = "created_at", insertable = false, updatable = false)
+    private java.time.Instant createdAt;
+
     protected LedgerEntry() {
     }
 
@@ -51,5 +54,9 @@ public class LedgerEntry {
 
     public BigDecimal getAmount() {
         return amount;
+    }
+
+    public java.time.Instant getCreatedAt() {
+        return createdAt;
     }
 }
