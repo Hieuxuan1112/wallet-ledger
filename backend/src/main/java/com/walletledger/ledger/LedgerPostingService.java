@@ -1,7 +1,6 @@
 package com.walletledger.ledger;
 
 import com.walletledger.account.Account;
-import com.walletledger.account.AccountRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -10,16 +9,16 @@ import java.math.BigDecimal;
 @Service
 public class LedgerPostingService {
 
-    private final AccountRepository accounts;
     private final LedgerTransactionRepository transactions;
     private final LedgerEntryRepository entries;
+    private final BalanceMutator mutator;
 
-    public LedgerPostingService(AccountRepository accounts,
-                                LedgerTransactionRepository transactions,
-                                LedgerEntryRepository entries) {
-        this.accounts = accounts;
+    public LedgerPostingService(LedgerTransactionRepository transactions,
+                                LedgerEntryRepository entries,
+                                BalanceMutator mutator) {
         this.transactions = transactions;
         this.entries = entries;
+        this.mutator = mutator;
     }
 
     /**
@@ -54,8 +53,9 @@ public class LedgerPostingService {
         // a real guarantee.
         long firstId = Math.min(fromAccountId, toAccountId);
         long secondId = Math.max(fromAccountId, toAccountId);
-        Account first = lock(firstId);
-        Account second = lock(secondId);
+        BalanceMutator.AccountPair pair = mutator.acquire(firstId, secondId);
+        Account first = pair.first();
+        Account second = pair.second();
 
         Account from = firstId == fromAccountId ? first : second;
         Account to = firstId == toAccountId ? first : second;
@@ -63,7 +63,7 @@ public class LedgerPostingService {
         try {
             from.debit(amount);
         } catch (IllegalStateException e) {
-            throw new InsufficientFundsException();
+            throw new InsufficientBalanceException();
         }
         to.credit(amount);
 
@@ -73,10 +73,5 @@ public class LedgerPostingService {
         entries.save(new LedgerEntry(transaction.getId(), to.getId(), amount));
 
         return transaction;
-    }
-
-    private Account lock(long accountId) {
-        return accounts.findByIdForUpdate(accountId)
-                .orElseThrow(() -> new IllegalArgumentException("No such account: " + accountId));
     }
 }

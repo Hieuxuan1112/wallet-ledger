@@ -76,7 +76,7 @@ class LedgerPostingServiceIT extends AbstractIntegrationTest {
 
         assertThatThrownBy(() -> posting.post(TransactionType.WITHDRAWAL, wallet.getOwnerUserId(),
                 "too much", wallet.getId(), SYSTEM_PAYOUT, new BigDecimal("1.0000")))
-                .isInstanceOf(InsufficientFundsException.class);
+                .isInstanceOf(InsufficientBalanceException.class);
 
         assertThat(accounts.findById(wallet.getId()).orElseThrow().getBalance())
                 .isEqualByComparingTo("0");
@@ -88,7 +88,7 @@ class LedgerPostingServiceIT extends AbstractIntegrationTest {
 
         assertThatThrownBy(() -> posting.post(TransactionType.WITHDRAWAL, wallet.getOwnerUserId(),
                 "too much", wallet.getId(), SYSTEM_PAYOUT, new BigDecimal("5.0000")))
-                .isInstanceOf(InsufficientFundsException.class);
+                .isInstanceOf(InsufficientBalanceException.class);
 
         assertThat(jdbc.queryForObject(
                 "select count(*) from ledger_entry where account_id = ?", Integer.class, wallet.getId()))

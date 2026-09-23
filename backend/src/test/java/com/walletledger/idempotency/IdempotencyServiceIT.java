@@ -5,7 +5,7 @@ import com.walletledger.account.Account;
 import com.walletledger.account.AccountRepository;
 import com.walletledger.auth.AppUser;
 import com.walletledger.auth.AppUserRepository;
-import com.walletledger.ledger.InsufficientFundsException;
+import com.walletledger.money.InsufficientFundsException;
 import com.walletledger.money.MoneyService;
 import com.walletledger.money.TransactionView;
 import org.junit.jupiter.api.Test;

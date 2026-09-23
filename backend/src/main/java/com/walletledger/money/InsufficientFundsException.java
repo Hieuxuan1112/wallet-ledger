@@ -1,4 +1,4 @@
-package com.walletledger.ledger;
+package com.walletledger.money;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;

@@ -5,6 +5,7 @@ import com.walletledger.audit.AuditLogger;
 import com.walletledger.audit.AuditOutcome;
 import com.walletledger.auth.AppUser;
 import com.walletledger.auth.AppUserRepository;
+import com.walletledger.ledger.InsufficientBalanceException;
 import com.walletledger.ledger.LedgerPostingService;
 import com.walletledger.ledger.LedgerTransaction;
 import com.walletledger.ledger.TransactionType;
@@ -47,7 +48,7 @@ public class MoneyService {
     public TransactionView deposit(long userId, BigDecimal amount, String description) {
         try {
             long walletId = walletIdOf(userId);
-            LedgerTransaction tx = posting.post(TransactionType.DEPOSIT, userId, description,
+            LedgerTransaction tx = post(TransactionType.DEPOSIT, userId, description,
                     SYSTEM_FUNDING, walletId, amount);
             TransactionView view = TransactionView.of(tx, amount, balanceAfter(walletId));
             auditSuccess(userId, "DEPOSIT", "amount=" + amount);
@@ -62,7 +63,7 @@ public class MoneyService {
     public TransactionView withdraw(long userId, BigDecimal amount, String description) {
         try {
             long walletId = walletIdOf(userId);
-            LedgerTransaction tx = posting.post(TransactionType.WITHDRAWAL, userId, description,
+            LedgerTransaction tx = post(TransactionType.WITHDRAWAL, userId, description,
                     walletId, SYSTEM_PAYOUT, amount);
             TransactionView view = TransactionView.of(tx, amount, balanceAfter(walletId));
             auditSuccess(userId, "WITHDRAWAL", "amount=" + amount);
@@ -84,7 +85,7 @@ public class MoneyService {
             long fromWalletId = walletIdOf(fromUserId);
             long toWalletId = walletIdOf(recipient.getId());
 
-            LedgerTransaction tx = posting.post(TransactionType.TRANSFER, fromUserId, description,
+            LedgerTransaction tx = post(TransactionType.TRANSFER, fromUserId, description,
                     fromWalletId, toWalletId, amount);
             TransactionView view = TransactionView.of(tx, amount, balanceAfter(fromWalletId));
             // Both sides. Money arriving is as auditable as money leaving, and audit_log has one
@@ -133,6 +134,16 @@ public class MoneyService {
                     + cause.getClass().getSimpleName(), AuditOutcome.FAILURE);
         } catch (RuntimeException auditFailure) {
             cause.addSuppressed(auditFailure);
+        }
+    }
+
+    /** Translates the ledger's plain domain signal into the HTTP-aware exception this package owns. */
+    private LedgerTransaction post(TransactionType type, long initiatedByUserId, String description,
+                                   long fromAccountId, long toAccountId, BigDecimal amount) {
+        try {
+            return posting.post(type, initiatedByUserId, description, fromAccountId, toAccountId, amount);
+        } catch (InsufficientBalanceException e) {
+            throw new InsufficientFundsException();
         }
     }
 

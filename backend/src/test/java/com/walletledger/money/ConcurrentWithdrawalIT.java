@@ -5,7 +5,6 @@ import com.walletledger.account.Account;
 import com.walletledger.account.AccountRepository;
 import com.walletledger.auth.AppUser;
 import com.walletledger.auth.AppUserRepository;
-import com.walletledger.ledger.InsufficientFundsException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
