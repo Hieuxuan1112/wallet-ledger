@@ -593,3 +593,185 @@ lần**. Log cho thấy 15/16 luồng thật sự va vào `uq_idempotency_user_k
 chưa ai viết test. Khi thu hẹp một `catch`, đừng hỏi *"lớp nào nghe có vẻ đúng"*; hãy **ném lỗi
 thật ra và đọc xem nhận được lớp gì**. Một test bốn dòng đứng giữa tôi và một lỗi idempotency im
 lặng trên môi trường thật.
+
+---
+
+## 12. Ba beans cùng "primary" — Spring không tự nhường, nó từ chối chọn
+
+**Giai đoạn:** 1C Task 4 · **Ai bắt được:** context không dựng được, đọc thẳng message của Spring
+
+**Triệu chứng.** `LostUpdateIT` định nghĩa một `@TestConfiguration` với `@Bean @Primary` để thay
+`PessimisticBalanceMutator` bằng `UnsafeBalanceMutator` — đúng như cách viết trong plan. Context
+không khởi động được:
+
+```
+No qualifying bean of type 'BalanceMutator' available: more than one 'primary' bean found
+among candidates: [optimisticBalanceMutator, pessimisticBalanceMutator, serializableBalanceMutator, unsafeMutator]
+```
+
+**Giả thuyết đầu tiên.** "Bean trong `@TestConfiguration` sẽ tự động thắng, vì nó được thêm sau."
+**Sai.** `@Primary` không phải thứ tự đăng ký — nó là một cờ đánh dấu. Hai bean cùng loại
+`BalanceMutator` cùng mang cờ này (`PessimisticBalanceMutator` ở mã sản xuất, `unsafeMutator` ở
+test) thì Spring có **hai** ứng viên "chính", và nó từ chối đoán — đúng thiết kế, không phải lỗi.
+
+**Cách sửa đúng.** Không thêm một `@Primary` thứ hai. **Ghi đè đúng cái bean đang tồn tại**, bằng
+cách đặt cùng tên (`@Bean("pessimisticBalanceMutator")`) và bật
+`spring.main.allow-bean-definition-overriding=true`. Khi đó chỉ còn **một** bean tên đó — không
+còn gì để mâu thuẫn.
+
+**Bẫy lồng bên trong bẫy #1 — đặt cờ sai chỗ.** Đặt được cờ overriding xong, lỗi đổi thành:
+
+```
+The bean 'pessimisticBalanceMutator' ... could not be registered ... overriding is disabled
+```
+
+`registry.add("spring.main.allow-bean-definition-overriding", ...)` qua `@DynamicPropertySource`
+**không có tác dụng** — giá trị đó được Spring đọc **trước khi** `@DynamicPropertySource` kịp thêm
+gì vào Environment (cơ chế này sinh ra để truyền cổng container lúc runtime, không phải để cấu
+hình `SpringApplication` từ sớm). Đổi sang `System.setProperty(...)` trong khối `static` — cùng vị
+trí đã start container Postgres — thì cờ mới thật sự có hiệu lực.
+
+**Bẫy lồng bên trong bẫy #2 — file đè mất chính nó.** Trên đường tìm chỗ đặt cờ, có lúc tôi tạo
+`backend/src/test/resources/application.yml` chỉ chứa đúng dòng cờ đó. Nó **thay thế hoàn toàn**
+`application.yml` chính (classpath chỉ nạp một file tên đó, và bản ở `test-classes` đứng trước bản
+ở `classes`), làm `app.jwt.access-token-ttl`/`refresh-token-ttl` biến mất và context vỡ vì lỗi
+validation không liên quan gì tới bean nữa. Xoá file thử nghiệm đó đi — nhưng **Maven không tự dọn
+file đã copy sang `target/` khi file nguồn biến mất**, nên lỗi vẫn còn cho tới khi xoá tay
+`target/test-classes/application.yml`.
+
+**Bẫy cuối — @Primary bị cuốn theo khi override.** Sau khi ghi đè đúng tên bean, lỗi đổi lần cuối:
+
+```
+Parameter 2 of constructor in LedgerPostingService required a single bean, but 3 were found
+```
+
+Việc ghi đè theo tên thay **toàn bộ định nghĩa bean**, kể cả annotation — `@Primary` trên class
+`PessimisticBalanceMutator` biến mất theo, để lại ba bean ngang hàng không ai là chính. Phải khai
+lại `@Primary` ngay trên bean ghi đè trong test.
+
+**Bài học.** Bốn lỗi liên tiếp, mỗi lỗi Spring **đều nói đúng sự thật** — chỉ là giả thuyết sửa
+mỗi lần chỉ chữa đúng triệu chứng đang thấy, chưa chữa cơ chế gốc. Bài học chung của cả chuỗi:
+**"ghi đè" trong Spring có nghĩa là thay hẳn một định nghĩa bean, không phải cộng thêm một bean
+cạnh tranh.** Nếu muốn một implementation khác được dùng trong test, hoặc thay hẳn theo tên (mang
+theo mọi thuộc tính nó cần, kể cả `@Primary`), hoặc đừng dùng `@Primary` ở nơi sẽ bị test ghi đè.
+
+---
+
+## 13. `@Version` bảo vệ mọi chiến lược đi qua JPA — kể cả chiến lược "không khoá gì cả"
+
+**Giai đoạn:** 1C Task 4 · **Ai bắt được:** thực nghiệm chạy được (bug #12 đã hết) nhưng ra kết quả
+không như thiết kế
+
+**Triệu chứng.** `UnsafeBalanceMutator` đọc tài khoản bằng `accounts.findById()` — không `FOR
+UPDATE`, không kiểm tra gì thêm, đúng như tên gọi. Plan kỳ vọng 150 luồng rút cùng lúc sẽ làm mất
+tiền thật (giống bug #12 của 1B kể lại bằng bảng, nhưng lần này chủ động tái hiện). Thực tế chạy
+ra:
+
+```
+org.springframework.orm.ObjectOptimisticLockingFailureException:
+Row was updated or deleted by another transaction: [com.walletledger.account.Account#2]
+```
+
+Không có tiền nào biến mất một cách âm thầm — 141/150 luồng bị từ chối bằng đúng ngoại lệ này.
+
+**Giả thuyết đầu tiên.** "Test sai, hoặc mutator viết sai — phải sửa cho nó thật sự không khoá gì."
+**Không cần sửa code sản xuất.** Đây là phát hiện thật, đúng như plan đã lường trước ở bước 3 của
+Task 4: *"nếu không tái hiện được, đừng ép — báo cáo trung thực"*.
+
+**Vì sao.** `Account` mang cột `@Version` (thêm sẵn cho chiến lược optimistic của Task 5). Hibernate
+kiểm cột này trên **mọi** entity đã được quản lý (managed) lúc flush — bất kể entity đó được đọc ra
+bằng chiến lược nào. `UnsafeBalanceMutator.acquire()` vẫn gọi `accounts.findById()`, tức là entity
+trả về vẫn nằm trong persistence context và vẫn bị Hibernate soi version khi `LedgerPostingService`
+ghi thay đổi. Bảo vệ này đến từ **kiểu dữ liệu của entity**, không đến từ chiến lược khoá — nó áp
+dụng cho pessimistic, optimistic, serializable lẫn "unsafe" như nhau, vì cả bốn đều đi qua cùng một
+persistence context.
+
+**Khác biệt thật giữa "unsafe" và "optimistic" không phải là có-hay-không bị bảo vệ — mà là có-hay-
+không được retry.** `OptimisticBalanceMutator` (Task 5) thử lại khi gặp đúng ngoại lệ này; `Unsafe`
+thì không, nên mọi xung đột trở thành **mất thông lượng** (141 lần thử thất bại, chỉ 9 lần thành
+công) thay vì mất tiền. Số dư cuối và tổng sổ cái vẫn khớp tuyệt đối.
+
+**Cách sửa đúng.** Không sửa `UnsafeBalanceMutator` để né `@Version` (sẽ cần đọc bằng SQL thô, phá
+vỡ chỗ dùng chung `Account` như một JPA entity của toàn bộ `LedgerPostingService`) — đổi assertion
+của test cho khớp sự thật: bắt thêm `ObjectOptimisticLockingFailureException` như một dạng từ chối
+hợp lệ, khẳng định số dư/sổ cái vẫn khớp, và khẳng định số lần thành công không vượt quá số tiền có
+— nhưng **không** còn khẳng định "tiền bị mất".
+
+**Bài học.** Một cột `@Version` không phải một tính năng cục bộ của riêng chiến lược optimistic —
+nó là một bất biến áp lên **kiểu entity**, có hiệu lực bất kể ai đọc nó ra. Thiết kế bốn chiến lược
+độc lập chỉ đúng ở tầng *acquire* (khoá hay không khoá khi đọc); tầng *flush* vẫn là một cơ chế
+dùng chung, và một khi entity mang `@Version`, tầng đó luôn có tiếng nói cuối cùng. Trước khi viết
+một "control experiment" chứng minh sự vắng mặt của bảo vệ, phải kiểm tra **mọi tầng** có khả năng
+tự thêm bảo vệ ngoài ý muốn — không chỉ tầng mình đang chủ động tắt.
+
+---
+
+## 14. Bốn context test cộng dồn connection nhanh hơn tưởng — và cách gộp về một
+
+**Giai đoạn:** 1C Task 7 · **Ai bắt được:** `mvn verify` đầy đủ đỏ, dù mọi class chạy riêng đều xanh
+
+**Triệu chứng.** `LostUpdateIT` (bug #12/#13) xanh khi chạy riêng. Bốn class mới của Task 7 —
+`PessimisticConcurrencyIT`, `OptimisticConcurrencyIT`, `SerializableConcurrencyIT`,
+`UnsafeConcurrencyIT` — cũng đều xanh khi chạy riêng (`-Dit.test=...`). Chạy **cả bộ**
+(`mvn verify`, 89 test): `LostUpdateIT` và cả bốn class Task 7 đồng loạt đỏ, cùng một thông báo:
+
+```
+FATAL: sorry, too many clients already   (SQLSTATE 53300)
+```
+
+**Giả thuyết đầu tiên.** "Lại là bug #12's max_connections — pool 24 của mỗi class cộng với pool
+64 mặc định." **Đúng một phần, nhưng chưa đủ.** Con số thật: `64` (context mặc định) `+ 24`
+(`LostUpdateIT`, `@TestConfiguration` riêng) `+ 24` (`AbstractConcurrencyContract`, dùng chung cho
+bốn subclass Task 7 nhưng vẫn là context **thứ ba**) `= 112` — vượt `max_connections = 100`.
+
+**Vì sao pool "dùng chung cho bốn subclass" vẫn không đủ.** Bốn class Task 7 CÓ share một context
+với nhau — đúng như thiết kế của `SelectableBalanceMutator` (đổi chiến lược bằng một field, không
+phải bốn `@TestConfiguration` khác nhau). Nhưng `LostUpdateIT` viết **trước** khi
+`AbstractConcurrencyContract` tồn tại, mang `@TestConfiguration` riêng của chính nó — nên nó vẫn là
+một context **thứ ba**, độc lập với context đã dùng chung của bốn class kia. "Dùng chung" chỉ có
+tác dụng giữa những class thật sự cùng một cấu hình; hai cấu hình dù giống hệt về mặt logic vẫn là
+hai cache key khác nhau nếu chúng không cùng khai báo class.
+
+**Cách sửa đầu tiên — đúng nhưng chưa đủ.** Xoá hẳn context thứ ba: `LostUpdateIT` và
+`UnsafeConcurrencyIT` đang kiểm tra **cùng một kịch bản** (chiến lược unsafe, 150 luồng, ví 100) —
+gộp bài test chi tiết của `LostUpdateIT` (đếm `versionConflicts`, in số liệu) thành một `@Test` phụ
+ngay trong `UnsafeConcurrencyIT`, vốn đã kế thừa context dùng chung. Xoá `LostUpdateIT.java`. Tính
+tay: `64 + 24 = 88`, đủ dư so với 100 — chạy lại `mvn verify` **vẫn đỏ**, đúng một thông báo cũ.
+
+**Đếm lại bằng bằng chứng, không bằng phép cộng trên giấy.** Grep dòng `Starting ... using Java`
+(Spring in ra mỗi khi dựng một context mới) trong log thật, thay vì tin vào con số tính nhẩm:
+
+```
+Starting AccountPersistenceIT using Java ...
+Starting AuditFailureIsolationIT using Java ...
+Starting OptimisticConcurrencyIT using Java ...
+```
+
+**Ba** context, không phải hai. `AuditFailureIsolationIT` dùng `@MockitoBean` để giả lập
+`AuditLogger` — và `@MockitoBean`, giống `@TestConfiguration`, cũng làm cấu hình context khác đi
+nên Spring không tái dùng context mặc định. Nó tồn tại **từ trước** Phase 1C rất lâu, chưa từng
+gây vấn đề gì vì trước đây chỉ có **hai** context tối đa cùng tồn tại. Task 7 là bên thứ ba, và ba
+context — dù đã gộp bớt — vẫn là `64 + 64 + 24 = 152`.
+
+**Vì sao 152 gây lỗi mà những lần chạy trước với tổng cấu hình cũng vượt 100 lại không.** HikariCP
+không mở đủ `maximum-pool-size` kết nối ngay khi khởi động — nó mở dần tới `minimumIdle` (mặc định
+bằng `maximumPoolSize`) trong một luồng nền, và tốc độ mở phụ thuộc tải thật. `AuditFailureIsolationIT`
+chỉ có một test, không luồng, gần như không bao giờ chạm tới vài kết nối thật — cấu hình `64` của
+nó là con số **chưa từng được dùng tới**, không phải con số **đang chiếm chỗ**. Cộng "pool đã cấu
+hình" của những context như vậy vào phép tính là cộng nhầm khả năng cực đại với mức dùng thật.
+
+**Cách sửa đúng.** Không phải giảm mãi pool của context đang cần đo hiệu năng (Task 7) — giảm nó
+tới mức quá nhỏ thì chính phép đo ở mục 7 `HOC_DONG_THOI_VA_KHOA.md` mất ý nghĩa. Giảm đúng chỗ
+**không cần** nhiều connection: `AuditFailureIsolationIT` chạy đơn luồng, hạ `maximum-pool-size`
+xuống `5` là dư. Tổng cấu hình còn `64 + 5 + 24 = 93` — nhưng con số quan trọng hơn là: context
+tốn kém thật (64, do các test đa luồng khác trong cùng context dùng tới) và context tốn kém thật
+thứ hai (24, Task 7 cũng đa luồng) không còn context thứ ba nào **cũng** đòi hỏi tải cao cùng lúc.
+
+**Bài học.** Hai lớp sai lầm chồng lên nhau. Lớp thứ nhất là bug #12 đã ghi: quên đếm một context.
+Lớp thứ hai, tinh vi hơn: **`maximum-pool-size` được cấu hình không phải là số connection đang
+chiếm chỗ** — nó chỉ là trần. Một context đơn luồng cấu hình pool 64 gần như vô hại; một context
+đa luồng cấu hình pool 24 thì gần chắc chắn dùng hết cả 24. Khi cộng dồn một giới hạn cứng dùng
+chung (`max_connections`), câu hỏi đúng không phải "tổng các con số cấu hình là bao nhiêu" mà là
+"context nào **thật sự** sẽ chạm gần tới trần của nó" — và câu trả lời chỉ lấy được từ log thật
+(dòng `Starting ... using Java` đếm được context, tải thật của từng bài test quyết định phần còn
+lại), không phải từ phép cộng trên giấy.

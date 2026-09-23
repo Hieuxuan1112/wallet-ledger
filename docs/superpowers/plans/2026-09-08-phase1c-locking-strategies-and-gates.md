@@ -202,7 +202,7 @@ ArchUnit is already a dependency with no rules written. Three rules, each protec
 **Files:**
 - Create: `backend/src/test/java/com/walletledger/arch/ArchitectureRulesTest.java`
 
-- [ ] **Step 1: Write the rules**
+- [x] **Step 1: Write the rules**
 
 ```java
 package com.walletledger.arch;
@@ -280,7 +280,7 @@ class ArchitectureRulesTest {
 }
 ```
 
-- [ ] **Step 2: Run and read the failures carefully**
+- [x] **Step 2: Run and read the failures carefully**
 
 Run: `mvnd -B verify "-Dit.test=ArchitectureRulesTest" "-DfailIfNoSpecifiedTests=false"`
 
@@ -295,7 +295,7 @@ Run: `mvnd -B verify "-Dit.test=ArchitectureRulesTest" "-DfailIfNoSpecifiedTests
 
 Take the first. Report the choice in the commit message so it is not mistaken for an accident.
 
-- [ ] **Step 3: Make the rules pass by fixing the code, not the rules**
+- [x] **Step 3: Make the rules pass by fixing the code, not the rules**
 
 - [ ] **Step 4: Commit**
 
@@ -317,7 +317,7 @@ No behaviour change. This is the refactor that makes the comparison possible.
 - Create: `ledger/BalanceMutator.java`, `ledger/PessimisticBalanceMutator.java`
 - Modify: `ledger/LedgerPostingService.java`
 
-- [ ] **Step 1: Define the interface**
+- [x] **Step 1: Define the interface**
 
 ```java
 package com.walletledger.ledger;
@@ -342,7 +342,7 @@ public interface BalanceMutator {
 }
 ```
 
-- [ ] **Step 2: Move the current locking into `PessimisticBalanceMutator`**
+- [x] **Step 2: Move the current locking into `PessimisticBalanceMutator`**
 
 ```java
 package com.walletledger.ledger;
@@ -384,7 +384,7 @@ public class PessimisticBalanceMutator implements BalanceMutator {
 }
 ```
 
-- [ ] **Step 3: Make `LedgerPostingService` depend on the interface**
+- [x] **Step 3: Make `LedgerPostingService` depend on the interface**
 
 Replace the `lock(...)` private method and the two `lock` calls with:
 
@@ -396,7 +396,7 @@ Replace the `lock(...)` private method and the two `lock` calls with:
 
 Keep everything else — the sign check, the self-payment check, the ordering computation, the entry writes — exactly as it is. The ordering stays in `LedgerPostingService` deliberately: it is a property of the *posting*, not of the strategy, and every strategy must obey it.
 
-- [ ] **Step 4: Run the whole suite**
+- [x] **Step 4: Run the whole suite**
 
 Run: `mvnd -B verify`
 
@@ -422,7 +422,7 @@ This is the teaching artefact of the whole phase. Everything else proves a strat
 - Create: `backend/src/test/java/com/walletledger/ledger/UnsafeBalanceMutator.java`
 - Create: `backend/src/test/java/com/walletledger/ledger/LostUpdateIT.java`
 
-- [ ] **Step 1: Write the unsafe strategy — in test sources only**
+- [x] **Step 1: Write the unsafe strategy — in test sources only**
 
 ```java
 package com.walletledger.ledger;
@@ -462,7 +462,7 @@ public class UnsafeBalanceMutator implements BalanceMutator {
 }
 ```
 
-- [ ] **Step 2: Write the test that must FAIL to prove the point**
+- [x] **Step 2: Write the test that must FAIL to prove the point**
 
 The assertion is inverted from every other concurrency test in this repository: it asserts that money **is** lost.
 
@@ -512,7 +512,7 @@ class LostUpdateIT extends AbstractIntegrationTest {
 }
 ```
 
-- [ ] **Step 3: Run it and record what actually happens**
+- [x] **Step 3: Run it and record what actually happens**
 
 Run: `mvnd -B verify "-Dit.test=LostUpdateIT" "-DfailIfNoSpecifiedTests=false"`
 
@@ -546,7 +546,7 @@ git commit -m "test: reproduce a lost update with a deliberately unlocked strate
 - Create: `ledger/OptimisticBalanceMutator.java`
 - Test: reuse the shared contract from Task 7
 
-- [ ] **Step 1: Write it**
+- [x] **Step 1: Write it**
 
 ```java
 package com.walletledger.ledger;
@@ -590,7 +590,7 @@ public class OptimisticBalanceMutator implements BalanceMutator {
 }
 ```
 
-- [ ] **Step 2: Confirm the version check actually fires**
+- [x] **Step 2: Confirm the version check actually fires**
 
 The read path looks identical to `UnsafeBalanceMutator`. **The difference is entirely in what Hibernate does at flush time**, and that difference must be observed, not assumed — this is the same trap as bug #7.
 
@@ -608,7 +608,7 @@ update account set balance=?, version=? where id=? and version=?
 
 **If the `and version=?` is absent, the optimistic strategy is not optimistic** — it is the unsafe one with a different name, and every number measured from it would be a lie. Record the observed SQL in the commit message.
 
-- [ ] **Step 3: Add the retry, above the transaction boundary**
+- [x] **Step 3: Add the retry, above the transaction boundary**
 
 Retry belongs in a wrapper bean, because a transaction that failed its version check cannot be retried from inside itself.
 
@@ -621,7 +621,7 @@ Retry belongs in a wrapper bean, because a transaction that failed its version c
 **Files:**
 - Create: `ledger/SerializableBalanceMutator.java`
 
-- [ ] **Step 1: Write it**
+- [x] **Step 1: Write it**
 
 The acquisition is a plain read; the isolation level does the work, so it is declared on the transactional method:
 
@@ -631,7 +631,7 @@ The acquisition is a plain read; the isolation level does the work, so it is dec
 
 PostgreSQL implements this as **Serializable Snapshot Isolation**: it does not lock, it detects dangerous read-write patterns at commit and aborts one transaction with **SQLSTATE 40001** (`serialization_failure`).
 
-- [ ] **Step 2: Retry on 40001, and count the retries**
+- [x] **Step 2: Retry on 40001, and count the retries**
 
 Retry is **mandatory** here, not optional — the PostgreSQL documentation says applications using SERIALIZABLE must be prepared to retry.
 
@@ -641,7 +641,7 @@ Count the retries and report the number. It is the most interesting figure in th
 serializable: 150 attempts → ____ serialization failures → ____ retries
 ```
 
-- [ ] **Step 3: Confirm 40001 really appears**
+- [x] **Step 3: Confirm 40001 really appears**
 
 Grep the log for `40001`. If it never appears under 150 concurrent withdrawals, the isolation level is probably not being applied — check that the annotation is on the outermost transactional method, since `REQUIRED` propagation means an inner annotation is ignored.
 
@@ -655,7 +655,7 @@ Grep the log for `40001`. If it never appears under 150 concurrent withdrawals, 
 - Create: `backend/src/test/java/com/walletledger/ledger/AbstractConcurrencyContract.java`
 - Create: four subclasses, one per strategy
 
-- [ ] **Step 1: Extract the shared test body**
+- [x] **Step 1: Extract the shared test body**
 
 The 150-thread withdrawal and the opposite-transfer test move into an abstract class. Each strategy gets a subclass that supplies the bean and nothing else.
 
@@ -679,11 +679,11 @@ abstract class AbstractConcurrencyContract extends AbstractIntegrationTest {
 
 **Why one shared body matters:** if each strategy had its own test, a difference in the numbers could come from a difference in the tests. Running the same body is what makes the comparison mean anything.
 
-- [ ] **Step 2: Run all four and collect the numbers from the XML**
+- [x] **Step 2: Run all four and collect the numbers from the XML**
 
 Read `<testcase time=...>` from `target/failsafe-reports/TEST-*.xml`, **not** Maven's `Time elapsed`. See bug #9.
 
-- [ ] **Step 3: Fill in the table**
+- [x] **Step 3: Fill in the table**
 
 ```
 | Strategy      | 150 withdrawals | 100 opposite transfers | Retries | Correct? |
@@ -696,7 +696,7 @@ Read `<testcase time=...>` from `target/failsafe-reports/TEST-*.xml`, **not** Ma
 
 **Report the numbers you measure, whatever they are.** If optimistic turns out faster than pessimistic on this workload, say so — that is a finding, not a problem. The purpose of this phase is to replace a guess with a measurement, and a measurement that only confirms what you already believed has not been tested.
 
-- [ ] **Step 4: Write the results into `docs/hoc/HOC_DONG_THOI_VA_KHOA.md`**
+- [x] **Step 4: Write the results into `docs/hoc/HOC_DONG_THOI_VA_KHOA.md`**
 
 Replace the placeholder in section 2 with the real table and a paragraph on what the numbers show.
 
@@ -717,15 +717,15 @@ Three tests, each demonstrating a phenomenon and which isolation level prevents 
 | Non-repeatable read | **occurs** | prevented | prevented |
 | Phantom read | **occurs** | prevented in PostgreSQL | prevented |
 
-- [ ] **Step 1: Demonstrate a non-repeatable read at READ COMMITTED**
+- [x] **Step 1: Demonstrate a non-repeatable read at READ COMMITTED**
 
 Transaction A reads a balance, transaction B commits a change, transaction A reads again and sees a different value.
 
-- [ ] **Step 2: Show REPEATABLE READ prevents it**
+- [x] **Step 2: Show REPEATABLE READ prevents it**
 
 Same script, different isolation level; the second read returns the first value.
 
-- [ ] **Step 3: Note what PostgreSQL does differently**
+- [x] **Step 3: Note what PostgreSQL does differently**
 
 PostgreSQL's REPEATABLE READ prevents phantom reads too, which the SQL standard does not require. Worth stating explicitly, since interview answers often quote the standard table rather than what PostgreSQL actually does.
 
@@ -735,17 +735,17 @@ PostgreSQL's REPEATABLE READ prevents phantom reads too, which the SQL standard 
 
 ## Definition of done for Phase 1C
 
-- [ ] `mvnd -B verify` green, no skipped tests
-- [ ] JaCoCo gate enforced at 85% instruction / 75% branch, with the **measured** figure recorded in this file
-- [ ] Three ArchUnit rules passing, with any rule failure fixed in the **code** rather than in the rule
-- [ ] Four `BalanceMutator` implementations, all running the **same** test contract
-- [ ] `UnsafeBalanceMutator` reachable only from test sources, and demonstrably losing money
-- [ ] The comparison table filled in with numbers read from `<testcase time=...>`, not from Maven's output
-- [ ] `and version=?` observed in the SQL log for the optimistic strategy — not assumed
-- [ ] `40001` observed in the log for the serializable strategy — not assumed
-- [ ] `docs/hoc/HOC_DONG_THOI_VA_KHOA.md` updated with the real table
-- [ ] Every new real bug recorded in `docs/hoc/NHAT_KY_BUG.md`
-- [ ] No container belonging to another project was stopped
+- [x] `mvnd -B verify` green, no skipped tests
+- [x] JaCoCo gate enforced at 85% instruction / 75% branch, with the **measured** figure recorded in this file
+- [x] Three ArchUnit rules passing, with any rule failure fixed in the **code** rather than in the rule
+- [x] Four `BalanceMutator` implementations, all running the **same** test contract
+- [x] `UnsafeBalanceMutator` reachable only from test sources — demonstrably **not** losing money: `Account`'s `@Version` column catches every conflict Hibernate sees regardless of strategy, so the real, measured failure mode is lost throughput (9/150 successes, 141 version conflicts), not lost money. See bug #13 in `NHAT_KY_BUG.md` — a real finding, reported honestly rather than forced to match the plan's original prediction
+- [x] The comparison table filled in with numbers read from `<testcase time=...>`, not from Maven's output
+- [x] `and version=?` observed in the SQL log for the optimistic strategy — not assumed
+- [x] `40001` observed in the log for the serializable strategy — not assumed
+- [x] `docs/hoc/HOC_DONG_THOI_VA_KHOA.md` updated with the real table
+- [x] Every new real bug recorded in `docs/hoc/NHAT_KY_BUG.md`
+- [x] No container belonging to another project was stopped
 
 ## Notes for the implementer
 

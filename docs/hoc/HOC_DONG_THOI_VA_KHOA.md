@@ -257,16 +257,48 @@ Suýt ghi 111,4 giây làm số đo. Đọc thẳng `target/failsafe-reports/TES
 
 ---
 
-## 8. Chỗ chưa làm
+## 8. Bốn chiến lược, một bộ test, một bảng số thật (Giai đoạn 1C)
 
-Nói rõ, không giấu:
+`LedgerPostingService.post` tách phần *khoá* ra sau interface `BalanceMutator` — bốn cách cài,
+chạy đúng **cùng một** bộ test (`AbstractConcurrencyContract`), không phải bốn bộ test khác nhau
+đo bốn thứ khác nhau.
 
-- **Chưa có bản cài optimistic / serializable / unsafe** để so sánh — đó là giai đoạn 1C. Cột
-  `@Version` trên `Account` đã có sẵn nhưng **chưa có gì dùng tới nó**.
-- **Chưa tái hiện được lost update** một cách chủ động. Cách chứng minh khoá có tác dụng hiện nay
-  là gián tiếp (test xanh). 1C sẽ có bản cài **cố tình sai** để thấy test đỏ thật.
-- **Chưa thử nghiệm các isolation level khác.** Toàn bộ đang chạy READ COMMITTED.
-- **Chưa đo dưới tải kéo dài.** Các con số trên là một lần chạy, không phải trung bình nhiều lần.
+| Chiến lược | 150 rút cùng lúc | 100 chuyển ngược chiều | Retry (rút / chuyển) | Đúng? |
+|---|---|---|---|---|
+| **Pessimistic** (đang dùng thật) | 2,158 s | 2,061 s | 0 / 0 | có |
+| Optimistic | 6,693 s | 13,629 s | 1858 / 1560 | có |
+| Serializable | 5,652 s | 5,125 s | 3035 / 2569 | có |
+| Unsafe (không khoá gì) | 0,359 s | 0,319 s | n/a | **không** — chỉ 9/150 thành công |
+
+Đo từ `<testcase time=...>` trong `target/failsafe-reports/TEST-*.xml`, chạy chung một
+`mvn verify`, context đã ấm — không phải bốn lần chạy Maven riêng biệt (nhiễu giữa các lần chạy
+trên máy này lớn hơn chênh lệch thật giữa các chiến lược).
+
+**Điều bất ngờ nhất: "unsafe" không làm mất tiền.** `Account` mang cột `@Version`
+(`docs/hoc/NHAT_KY_BUG.md`, bug #13) — Hibernate kiểm cột này trên **mọi** entity đã quản lý lúc
+flush, bất kể chiến lược nào đọc nó ra. `UnsafeBalanceMutator` đọc bằng `accounts.findById()` như
+ba chiến lược kia, nên hai giao dịch đụng nhau vẫn bị chặn — chỉ khác là **không ai thử lại**.
+Kết quả: tiền không mất (91 = 100 − 9, số dư và sổ cái vẫn khớp tuyệt đối), nhưng thông lượng sụp
+— 141/150 lần rút bị từ chối vì tranh chấp version, không phải vì thiếu tiền.
+
+**Optimistic nhanh hơn cả với 1858 lần thử lại — nghịch lý chỉ tưởng vậy.** Số lần thử lại lớn
+nhưng mỗi lần thử lại rẻ (một round-trip ngắn, không giữ khoá dòng trong lúc chờ), còn Pessimistic
+serial hoá 150 luồng qua đúng một khoá — ít round-trip hơn nhưng mỗi round-trip có luồng phải chờ
+thật sự. Trên khối lượng nhỏ (một ví, một cặp ví) kiểu tranh chấp "thử nhanh, thất bại rẻ" thắng
+kiểu "chờ tới lượt". Đừng suy ra pessimistic luôn chậm hơn — bài test này không đo tải cao với
+nhiều ví khác nhau, nơi hàng nghìn lần thử lại của optimistic mới thật sự tính tiền CPU và
+round-trip DB.
+
+**Serializable đắt nhất theo retry (hơn 3000 lần) nhưng không chậm nhất theo thời gian** — SSI của
+PostgreSQL phát hiện xung đột sớm và abort rẻ, `40001` xuất hiện thật trong log
+(`could not serialize access due to concurrent update`), và `and version=?` cũng được xác nhận
+thật trong SQL log của optimistic — không giả định, đúng tinh thần bug #7.
+
+**Vẫn còn:**
+
+- Chưa đo dưới tải kéo dài hoặc với nhiều ví khác nhau đồng thời (bài test này cố tình siết vào
+  đúng một điểm tranh chấp để đo rõ sự khác biệt giữa các chiến lược).
+- Isolation phenomena (dirty/non-repeatable/phantom read) — mục 9 dưới đây khi được thêm.
 
 ---
 
