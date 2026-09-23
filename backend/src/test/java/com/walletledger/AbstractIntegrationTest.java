@@ -36,9 +36,24 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @AutoConfigureMockMvc
 public abstract class AbstractIntegrationTest {
 
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
+    // Phase 1C's concurrency-strategy tests (@MockitoBean, @TestConfiguration bean swaps) each
+    // give their test class its own cached ApplicationContext and therefore its own Hikari pool —
+    // see bug #14 in NHAT_KY_BUG.md. PostgreSQL's default max_connections (100) was sized for a
+    // single 64-connection pool with headroom, not several pools coexisting; raising it here is
+    // the actual fix, not shrinking every secondary pool further, which would eventually starve
+    // the concurrency tests those pools exist to run correctly.
+    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+            .withCommand("postgres", "-c", "max_connections=300");
 
     static {
+        // spring.main.allow-bean-definition-overriding is off by default in production. Phase 1C's
+        // concurrency-strategy tests swap PessimisticBalanceMutator for an alternative by
+        // redefining the bean under its own name ("pessimisticBalanceMutator") rather than adding a
+        // second @Primary candidate of the same type, which Spring refuses to resolve as an
+        // ambiguous wiring error. It has to be set as a System property, this early: SpringApplication
+        // reads spring.main.* before either @DynamicPropertySource or @TestPropertySource values
+        // exist, so both of those are too late to carry it.
+        System.setProperty("spring.main.allow-bean-definition-overriding", "true");
         POSTGRES.start();
         Runtime.getRuntime().addShutdownHook(new Thread(POSTGRES::stop));
     }
