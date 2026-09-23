@@ -36,6 +36,23 @@ public class LedgerPostingService {
     @Transactional
     public LedgerTransaction post(TransactionType type, long initiatedByUserId, String description,
                                   long fromAccountId, long toAccountId, BigDecimal amount) {
+        return post(type, initiatedByUserId, description, fromAccountId, toAccountId, amount, null);
+    }
+
+    /**
+     * The reversal link is required for TransactionType.REVERSAL and forbidden for everything
+     * else — the same rule the ck_reversal_link CHECK enforces in V2__ledger.sql. Checking it
+     * here, not only in the database, gives a caller an IllegalArgumentException instead of a
+     * DataIntegrityViolationException surfacing from three layers down.
+     */
+    @Transactional
+    public LedgerTransaction post(TransactionType type, long initiatedByUserId, String description,
+                                  long fromAccountId, long toAccountId, BigDecimal amount,
+                                  Long reversesTransactionId) {
+        if ((type == TransactionType.REVERSAL) != (reversesTransactionId != null)) {
+            throw new IllegalArgumentException(
+                    "reversesTransactionId is required for, and only for, TransactionType.REVERSAL");
+        }
         // The sign is checked here, not only in the request DTOs, because this method is the
         // chokepoint and every service-layer caller reaches it without passing through them.
         // A negative amount would reverse the direction of the posting: "pay 50 to B" becomes a
@@ -67,8 +84,9 @@ public class LedgerPostingService {
         }
         to.credit(amount);
 
-        LedgerTransaction transaction =
-                transactions.save(LedgerTransaction.of(type, initiatedByUserId, description));
+        LedgerTransaction transaction = transactions.save(reversesTransactionId == null
+                ? LedgerTransaction.of(type, initiatedByUserId, description)
+                : LedgerTransaction.reversal(initiatedByUserId, description, reversesTransactionId));
         entries.save(new LedgerEntry(transaction.getId(), from.getId(), amount.negate()));
         entries.save(new LedgerEntry(transaction.getId(), to.getId(), amount));
 

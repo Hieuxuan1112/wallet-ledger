@@ -42,15 +42,23 @@ public class LedgerTransaction {
     protected LedgerTransaction() {
     }
 
-    private LedgerTransaction(TransactionType type, Long initiatedByUserId, String description) {
+    private LedgerTransaction(TransactionType type, Long initiatedByUserId, String description,
+                              Long reversesTransactionId) {
         this.publicId = UUID.randomUUID();
         this.type = type;
         this.initiatedByUserId = initiatedByUserId;
         this.description = description;
+        this.reversesTransactionId = reversesTransactionId;
     }
 
     public static LedgerTransaction of(TransactionType type, Long initiatedByUserId, String description) {
-        return new LedgerTransaction(type, initiatedByUserId, description);
+        return new LedgerTransaction(type, initiatedByUserId, description, null);
+    }
+
+    public static LedgerTransaction reversal(Long initiatedByUserId, String description,
+                                             Long reversesTransactionId) {
+        return new LedgerTransaction(TransactionType.REVERSAL, initiatedByUserId, description,
+                reversesTransactionId);
     }
 
     public Long getId() {
@@ -71,5 +79,9 @@ public class LedgerTransaction {
 
     public String getDescription() {
         return description;
+    }
+
+    public Long getReversesTransactionId() {
+        return reversesTransactionId;
     }
 }

@@ -136,4 +136,40 @@ class LedgerPostingServiceIT extends AbstractIntegrationTest {
                 "loop", wallet.getId(), wallet.getId(), new BigDecimal("1.0000")))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void aReversalRecordsWhichTransactionItReverses() {
+        Account wallet = newWallet();
+        LedgerTransaction original = posting.post(TransactionType.DEPOSIT, wallet.getOwnerUserId(),
+                "seed", SYSTEM_FUNDING, wallet.getId(), new BigDecimal("40.0000"));
+
+        LedgerTransaction reversal = posting.post(TransactionType.REVERSAL, wallet.getOwnerUserId(),
+                "undo", wallet.getId(), SYSTEM_FUNDING, new BigDecimal("40.0000"), original.getId());
+
+        assertThat(jdbc.queryForObject(
+                "select reverses_transaction_id from ledger_transaction where id = ?",
+                Long.class, reversal.getId()))
+                .isEqualTo(original.getId());
+    }
+
+    @Test
+    void aReversalWithoutALinkIsRefused() {
+        Account wallet = newWallet();
+
+        assertThatThrownBy(() -> posting.post(TransactionType.REVERSAL, wallet.getOwnerUserId(),
+                "undo", wallet.getId(), SYSTEM_FUNDING, new BigDecimal("1.0000"), null))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aNonReversalCannotCarryALink() {
+        Account wallet = newWallet();
+        LedgerTransaction original = posting.post(TransactionType.DEPOSIT, wallet.getOwnerUserId(),
+                "seed", SYSTEM_FUNDING, wallet.getId(), new BigDecimal("10.0000"));
+
+        assertThatThrownBy(() -> posting.post(TransactionType.DEPOSIT, wallet.getOwnerUserId(),
+                "not a reversal", SYSTEM_FUNDING, wallet.getId(), new BigDecimal("1.0000"),
+                original.getId()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }
