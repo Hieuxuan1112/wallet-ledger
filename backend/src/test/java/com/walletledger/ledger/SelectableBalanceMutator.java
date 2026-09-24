@@ -19,15 +19,18 @@ class SelectableBalanceMutator implements BalanceMutator {
     private final PessimisticBalanceMutator pessimistic;
     private final OptimisticBalanceMutator optimistic;
     private final SerializableBalanceMutator serializable;
+    private final SynchronizedBalanceMutator synchronizedLock;
     private final UnsafeBalanceMutator unsafe;
 
     private volatile BalanceMutator active;
 
     SelectableBalanceMutator(AccountRepository accounts, PessimisticBalanceMutator pessimistic,
-                             OptimisticBalanceMutator optimistic, SerializableBalanceMutator serializable) {
+                             OptimisticBalanceMutator optimistic, SerializableBalanceMutator serializable,
+                             SynchronizedBalanceMutator synchronizedLock) {
         this.pessimistic = pessimistic;
         this.optimistic = optimistic;
         this.serializable = serializable;
+        this.synchronizedLock = synchronizedLock;
         this.unsafe = new UnsafeBalanceMutator(accounts);
         this.active = pessimistic;
     }
@@ -46,6 +49,10 @@ class SelectableBalanceMutator implements BalanceMutator {
 
     BalanceMutator serializable() {
         return serializable;
+    }
+
+    BalanceMutator synchronizedLock() {
+        return synchronizedLock;
     }
 
     BalanceMutator unsafe() {

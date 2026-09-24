@@ -2,6 +2,7 @@ package com.walletledger.ledger;
 
 import com.walletledger.account.Account;
 import com.walletledger.account.AccountRepository;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Component;
  */
 @Component
 @Primary
+@ConditionalOnProperty(name = "app.ledger.mutator", havingValue = "pessimistic", matchIfMissing = true)
 public class PessimisticBalanceMutator implements BalanceMutator {
 
     private final AccountRepository accounts;
