@@ -1,0 +1,18 @@
+# http context; rendered by the image's envsubst
+limit_req_zone $binary_remote_addr zone=rl_auth:10m rate=10r/m;
+limit_req_zone $binary_remote_addr zone=rl_api:10m rate=20r/s;
+limit_req_status 429;
+
+# Docker's embedded DNS. valid=10s: a replaced or scaled replica is seen within ten seconds.
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+upstream api {
+    zone api 64k;
+    server api:${API_PORT} resolve;
+}
+
+# The replica address, only when the multi-instance test harness asks for it.
+map "${NGINX_EXPOSE_UPSTREAM}" $upstream_debug {
+    on      $upstream_addr;
+    default "";
+}

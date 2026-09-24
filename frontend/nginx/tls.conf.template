@@ -1,0 +1,19 @@
+# Mounted over default.conf.template by docker-compose.prod.yml
+server {
+    listen 8080;
+    server_name ${SERVER_NAME};
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location = /healthz { access_log off; default_type text/plain; return 200 "ok\n"; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 8443 ssl;
+    http2 on;
+    server_name ${SERVER_NAME};
+    ssl_certificate     /etc/letsencrypt/live/${SERVER_NAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${SERVER_NAME}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    include /etc/nginx/snippets/app.conf;
+}
