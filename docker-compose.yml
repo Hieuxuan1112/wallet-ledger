@@ -1,12 +1,18 @@
+# One file for local, CI and production. docker-compose.prod.yml adds only TLS and replicas.
+name: wallet-ledger
+
 services:
   db:
     image: postgres:16-alpine
+    # 3 replicas x a pool of 48 = 144, plus headroom for psql and backups.
+    command: ["postgres", "-c", "max_connections=200"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-wallet}
       POSTGRES_USER: ${POSTGRES_USER:-wallet}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
-      - "${DB_PORT:-55433}:5432"
+      # Loopback only: reachable for local debugging and from the VM itself, never from outside.
+      - "127.0.0.1:${DB_PORT:-55433}:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
     healthcheck:
@@ -14,6 +20,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   kafka:
     image: apache/kafka-native:3.8.0
@@ -28,7 +35,60 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     ports:
-      - "${KAFKA_PORT:-19092}:9094"
+      - "127.0.0.1:${KAFKA_PORT:-19092}:9094"
+    healthcheck:
+      # The native image has no Kafka CLI tools, but it has nc.
+      test: ["CMD-SHELL", "nc -z localhost 9092"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    image: ghcr.io/hieuxuan1112/wallet-ledger-api:${IMAGE_TAG:-local}
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432                   # the container port, not the host's DB_PORT
+      POSTGRES_DB: ${POSTGRES_DB:-wallet}
+      POSTGRES_USER: ${POSTGRES_USER:-wallet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      APP_JWT_SECRET: ${APP_JWT_SECRET:?APP_JWT_SECRET is required}
+      API_PORT: 8091
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      APP_EVENTS_PUBLISHER: kafka
+      APP_OUTBOX_RELAY_ENABLED: "true"
+      APP_LEDGER_MUTATOR: ${APP_LEDGER_MUTATOR:-pessimistic}
+    # No ports: scaled replicas cannot share a host port, and only nginx should reach them.
+    depends_on:
+      db: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8091/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 60s
+    mem_limit: 768m
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    image: ghcr.io/hieuxuan1112/wallet-ledger-web:${IMAGE_TAG:-local}
+    environment:
+      API_PORT: 8091
+      NGINX_EXPOSE_UPSTREAM: ${NGINX_EXPOSE_UPSTREAM:-off}
+      SERVER_NAME: ${SERVER_NAME:-localhost}
+    ports:
+      - "${WEB_PORT:-8095}:8080"
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
 
 volumes:
   db-data:
