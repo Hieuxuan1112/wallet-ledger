@@ -13,6 +13,16 @@ spring:
       hibernate.jdbc.time_zone: UTC
   flyway:
     enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      group-id: notification-consumer
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
   # Without this, a validation failure returns Spring Boot's older error body while our own
   # exceptions return RFC 7807, so the API would speak two error formats depending on which
   # layer rejected the request.
@@ -28,3 +38,20 @@ app:
     secret: ${APP_JWT_SECRET}
     access-token-ttl: PT15M
     refresh-token-ttl: P7D
+  events:
+    # "logging" is the safe default: every test class that extends AbstractIntegrationTest but
+    # not AbstractKafkaIntegrationTest shares one cached Spring context (bug #14's lesson), and
+    # that context must never require a real Kafka broker just to start. Kafka-specific tests
+    # (Task 5 on) override this to "kafka" via @DynamicPropertySource, which is exactly what
+    # gives them their own separate context. Real deployment sets APP_EVENTS_PUBLISHER=kafka via
+    # docker-compose (Task 8).
+    publisher: ${APP_EVENTS_PUBLISHER:logging}
+  outbox:
+    relay:
+      # Off by default for the same reason the publisher defaults to logging: most integration
+      # tests share one cached Spring context, and a ticking background scheduler racing test
+      # assertions (claiming an event before the test itself gets to inspect it) would make the
+      # whole shared suite flaky. Tests that exercise the relay call relay.relay() directly.
+      # docker-compose (Task 8) sets APP_OUTBOX_RELAY_ENABLED=true for real deployment.
+      enabled: ${APP_OUTBOX_RELAY_ENABLED:false}
+      fixed-delay: PT5S
