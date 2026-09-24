@@ -67,7 +67,8 @@ abstract class AbstractConcurrencyContract extends AbstractIntegrationTest {
             return new SelectableBalanceMutator(accounts,
                     new PessimisticBalanceMutator(accounts),
                     new OptimisticBalanceMutator(accounts),
-                    new SerializableBalanceMutator(accounts));
+                    new SerializableBalanceMutator(accounts),
+                    new SynchronizedBalanceMutator(accounts));
         }
 
         @Bean

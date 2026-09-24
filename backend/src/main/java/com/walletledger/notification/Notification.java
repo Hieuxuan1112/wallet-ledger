@@ -30,6 +30,9 @@ public class Notification {
     @Column(name = "event_id", nullable = false, unique = true)
     private UUID eventId;
 
+    @Column(name = "created_at", insertable = false, updatable = false)
+    private java.time.Instant createdAt;
+
     protected Notification() {
     }
 
@@ -58,5 +61,9 @@ public class Notification {
 
     public UUID getEventId() {
         return eventId;
+    }
+
+    public java.time.Instant getCreatedAt() {
+        return createdAt;
     }
 }

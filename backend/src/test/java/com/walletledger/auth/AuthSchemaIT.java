@@ -48,6 +48,9 @@ class AuthSchemaIT extends AbstractIntegrationTest {
                         + "values (?, repeat('a', 64), gen_random_uuid(), now() + interval '7 days')", userId))
                 .isInstanceOf(DuplicateKeyException.class);
 
-        assertThat(jdbc.queryForObject("select count(*) from refresh_token", Integer.class)).isEqualTo(1);
+        // Scoped to this test's own user: refresh_token is shared by every class in the JVM, and an
+        // absolute count only holds when this class happens to run before the ones that add rows.
+        assertThat(jdbc.queryForObject(
+                "select count(*) from refresh_token where user_id = ?", Integer.class, userId)).isEqualTo(1);
     }
 }

@@ -7,8 +7,35 @@ The point of this repository is not the feature list. It is the part most CRUD p
 exercise: **transactions, pessimistic locking, idempotency, and invariants the database itself
 enforces.**
 
-> **Status: backend complete through Phase 1B.** No frontend yet, and never deployed. See
-> [What is not done](#what-is-not-done) — that section is deliberately honest.
+[![CI](https://github.com/Hieuxuan1112/wallet-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/Hieuxuan1112/wallet-ledger/actions/workflows/ci.yml)
+
+> **Status: Phase 3.** Backend (ledger, refund, statement, outbox, Kafka), React SPA, nginx and CI
+> are done; the live deployment is pending an Oracle VM (see [docs/DEPLOY.md](docs/DEPLOY.md)).
+> See [What is not done](#what-is-not-done) — that section is deliberately honest.
+
+## Run it
+
+```bash
+cp .env.example .env          # then fill POSTGRES_PASSWORD and APP_JWT_SECRET (no defaults)
+docker compose up -d --build --scale api=3 --wait
+bash scripts/smoke.sh http://localhost:8095
+```
+
+Open `http://localhost:8095`. Three API replicas sit behind nginx, which also serves the React
+SPA, sets the security headers and rate-limits `/api/v1/auth`.
+
+## Three JVMs, one database
+
+`scripts/multi-instance.sh` starts that stack and sends 100 concurrent withdrawals of 1 at a
+wallet holding 50, through nginx (see `MultiInstanceIT`). Measured on the workstation:
+
+| Balance strategy, 3 replicas | Result of 100 requests | Money | Events on `wallet-events` |
+|---|---|---|---|
+| `FOR UPDATE` (production) | 50 × 201, 50 × 409 | exact, balance 0 | 51 of 51, each exactly once |
+| Java `synchronized` (control) | 85 × 201, **15 × 500** on a wallet the money covered | exact (`@Version` rejects stale writes) | not measured |
+
+A Java lock is correct inside one JVM (`SynchronizedConcurrencyIT` passes the same contract as
+`FOR UPDATE`) and stops being correct the moment a second JVM shares the database.
 
 ---
 
@@ -171,13 +198,11 @@ No JDK or Maven needed on the host — only Docker.
 
 Stated plainly, because a README that hides gaps is worth less than one that does not:
 
-- **No frontend.** API only.
-- **Never run outside tests.** Every test builds its database with Testcontainers and throws it
-  away. `docker compose up` has not been run once, so the application has not started against a
-  long-lived database yet.
-- **Never deployed.** No CI, no server.
-- **No coverage number.** JaCoCo is not configured; ArchUnit is a dependency with no rules written.
-- **No statement, no refund, no Kafka.** Phase 2.
+- **Not deployed yet.** The CI workflow and the production compose overlay exist and were
+  validated locally, but there is no live URL until an Oracle VM is set up.
+- **No AI layer.** Phase 4.
+- **No reconcile endpoint** (`GET /api/v1/admin/reconcile`, spec section 4.3) and no
+  `LedgerInvariantIT`.
 - Idempotency keys and audit rows are never pruned — no TTL, no cleanup job.
 
 ## Learning documentation

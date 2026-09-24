@@ -4,7 +4,16 @@ spring:
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:55433}/${POSTGRES_DB:wallet}
     username: ${POSTGRES_USER:wallet}
-    password: ${POSTGRES_PASSWORD:}
+    # No default: an empty password must stop startup naming the variable, not be tried.
+    password: ${POSTGRES_PASSWORD}
+    hikari:
+      # Every money operation holds two connections at once: its own transaction, and the
+      # REQUIRES_NEW transaction AuditLogger opens while the first is still open (bug #9).
+      # Requests that queue on a wallet's row lock hold their first connection while they wait,
+      # so a pool smaller than 2 x the request threads deadlocks on itself: the lock holder can
+      # never get its second connection. Keep this at exactly twice server.tomcat.threads.max.
+      # Per replica; the database must allow (replicas x this) connections (max_connections).
+      maximum-pool-size: 48
   jpa:
     hibernate:
       ddl-auto: validate
@@ -32,12 +41,27 @@ spring:
 
 server:
   port: ${API_PORT:8091}
+  tomcat:
+    # Half of spring.datasource.hikari.maximum-pool-size, see the note there. Excess requests wait
+    # in Tomcat's accept queue, which is cheap; excess threads would wait on the connection pool.
+    threads:
+      max: 24
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Health only. It is the single endpoint the container healthcheck needs.
+        include: health
 
 app:
   jwt:
     secret: ${APP_JWT_SECRET}
     access-token-ttl: PT15M
     refresh-token-ttl: P7D
+  ledger:
+    # pessimistic (production) | synchronized (MultiInstanceIT's control experiment only)
+    mutator: ${APP_LEDGER_MUTATOR:pessimistic}
   events:
     # "logging" is the safe default: every test class that extends AbstractIntegrationTest but
     # not AbstractKafkaIntegrationTest shares one cached Spring context (bug #14's lesson), and

@@ -1,0 +1,2 @@
+# An example Idempotency-Key UUID in the docs, matched by the generic-api-key rule. Not a secret.
+fb9ec273f2c16e1d1547002f488c8b74ab30c1d1:docs/hoc/HOC_IDEMPOTENCY.md:generic-api-key:28
