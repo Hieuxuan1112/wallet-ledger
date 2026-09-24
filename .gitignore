@@ -8,3 +8,5 @@ PROMPT_KHOI_TAO.md
 *.log
 .idea/
 .vscode/
+backups/
+.local/

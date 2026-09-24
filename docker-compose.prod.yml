@@ -1,0 +1,31 @@
+# Used only on the VM, on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  api:
+    deploy:
+      replicas: 3
+
+  web:
+    ports:
+      - "443:8443"
+    volumes:
+      - ./frontend/nginx/tls.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot:ro
+
+  certbot:
+    image: certbot/certbot:v5.8.0
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    # Renews when due (certbot itself decides); the deploy hook saved at issuance hands the
+    # files to nginx's uid 101, since the unprivileged nginx cannot read root-only keys.
+    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -d /etc/letsencrypt/live"]
+      interval: 1h
+    restart: unless-stopped
+
+volumes:
+  letsencrypt:
+  certbot-www:
