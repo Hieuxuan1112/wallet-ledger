@@ -1,6 +1,11 @@
 package com.walletledger.ledger;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.walletledger.account.Account;
+import com.walletledger.outbox.OutboxEvent;
+import com.walletledger.outbox.OutboxEventRepository;
+import com.walletledger.outbox.TransactionPostedPayload;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -12,13 +17,19 @@ public class LedgerPostingService {
     private final LedgerTransactionRepository transactions;
     private final LedgerEntryRepository entries;
     private final BalanceMutator mutator;
+    private final OutboxEventRepository outboxEvents;
+    private final ObjectMapper objectMapper;
 
     public LedgerPostingService(LedgerTransactionRepository transactions,
                                 LedgerEntryRepository entries,
-                                BalanceMutator mutator) {
+                                BalanceMutator mutator,
+                                OutboxEventRepository outboxEvents,
+                                ObjectMapper objectMapper) {
         this.transactions = transactions;
         this.entries = entries;
         this.mutator = mutator;
+        this.outboxEvents = outboxEvents;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -89,7 +100,24 @@ public class LedgerPostingService {
                 : LedgerTransaction.reversal(initiatedByUserId, description, reversesTransactionId));
         entries.save(new LedgerEntry(transaction.getId(), from.getId(), amount.negate()));
         entries.save(new LedgerEntry(transaction.getId(), to.getId(), amount));
+        writeOutboxEvent(transaction, initiatedByUserId, amount);
 
         return transaction;
+    }
+
+    /**
+     * Same transaction as the ledger write above -- this is the whole fix for the dual-write
+     * problem (spec section 7). A relay reads this row later and publishes it to Kafka; nothing
+     * here talks to a broker directly, so a broker outage can never block a money movement.
+     */
+    private void writeOutboxEvent(LedgerTransaction transaction, long initiatedByUserId, BigDecimal amount) {
+        TransactionPostedPayload payload = new TransactionPostedPayload(transaction.getPublicId(),
+                initiatedByUserId, transaction.getType().name(), amount, transaction.getDescription());
+        try {
+            outboxEvents.save(new OutboxEvent("LedgerTransaction", transaction.getId(),
+                    OutboxEvent.TRANSACTION_POSTED, objectMapper.writeValueAsString(payload)));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Could not serialise a transaction-posted outbox payload", e);
+        }
     }
 }

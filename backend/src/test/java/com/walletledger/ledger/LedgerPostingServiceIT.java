@@ -5,11 +5,14 @@ import com.walletledger.account.Account;
 import com.walletledger.account.AccountRepository;
 import com.walletledger.auth.AppUser;
 import com.walletledger.auth.AppUserRepository;
+import com.walletledger.outbox.OutboxEvent;
+import com.walletledger.outbox.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,9 +35,30 @@ class LedgerPostingServiceIT extends AbstractIntegrationTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private OutboxEventRepository outboxEvents;
+
     private Account newWallet() {
         AppUser user = users.save(AppUser.create("post-" + UUID.randomUUID(), "hash"));
         return accounts.save(Account.walletFor(user.getId()));
+    }
+
+    @Test
+    void postingWritesAnUnpublishedOutboxEventInTheSameTransaction() {
+        Account wallet = newWallet();
+
+        LedgerTransaction tx = posting.post(TransactionType.DEPOSIT, wallet.getOwnerUserId(),
+                "top up", SYSTEM_FUNDING, wallet.getId(), new BigDecimal("50.0000"));
+
+        // findByAggregateTypeAndAggregateId, not claimBatch: other tests leave their own
+        // unpublished rows (relay is off by default) and claimBatch's LIMIT returns only the oldest.
+        List<OutboxEvent> events = outboxEvents.findByAggregateTypeAndAggregateId("LedgerTransaction", tx.getId());
+        assertThat(events).hasSize(1);
+        OutboxEvent event = events.get(0);
+        assertThat(event.getAggregateType()).isEqualTo("LedgerTransaction");
+        assertThat(event.getEventType()).isEqualTo(OutboxEvent.TRANSACTION_POSTED);
+        assertThat(event.getPublishedAt()).isNull();
+        assertThat(event.getPayload()).contains(tx.getPublicId().toString()).contains("50.0000");
     }
 
     @Test
